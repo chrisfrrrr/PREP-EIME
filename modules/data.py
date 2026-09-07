@@ -470,3 +470,357 @@ def delete_question(question_id):
         return True, "Pregunta eliminada."
     except Exception as e:
         return False, f"No fue posible eliminar la pregunta: {e}"
+
+
+# ============================================================
+# PREP-EIME v1.5 | SIMULADOR EGP
+# ============================================================
+
+import random
+from datetime import datetime, timezone
+
+
+def get_published_questions_for_simulator(career_code):
+    """Preguntas publicadas asociadas a la carrera."""
+    if DEMO_MODE:
+        return []
+    c = _client()
+    if not c or not career_code:
+        return []
+
+    links = (
+        c.table("question_careers")
+        .select("question_id")
+        .eq("career_code", career_code)
+        .execute().data or []
+    )
+    ids = [x["question_id"] for x in links]
+    if not ids:
+        return []
+
+    rows = (
+        c.table("questions")
+        .select(
+            "id,area_id,course_code,topic_id,question_text,expected_answer,"
+            "difficulty,competency,question_type,status"
+        )
+        .eq("status", "publicado")
+        .in_("id", ids)
+        .execute().data or []
+    )
+    return rows
+
+
+def build_simulator_question_set(
+    career_code,
+    question_count=10,
+    area_names=None,
+    difficulty_levels=None,
+):
+    """Construye una muestra aleatoria, respetando filtros disponibles."""
+    questions = get_published_questions_for_simulator(career_code)
+    if not questions:
+        return []
+
+    courses = {c["code"]: c for c in get_courses_for_career(career_code)}
+
+    filtered = []
+    for q in questions:
+        course = courses.get(q.get("course_code"), {})
+        area = course.get("area")
+        if area_names and area not in area_names:
+            continue
+        if difficulty_levels and q.get("difficulty") not in difficulty_levels:
+            continue
+        q = dict(q)
+        q["area"] = area or "Sin área"
+        q["course_name"] = course.get("name") or q.get("course_code")
+        filtered.append(q)
+
+    random.shuffle(filtered)
+    return filtered[: min(int(question_count), len(filtered))]
+
+
+def create_attempt(student_id, career_code, question_ids, duration_minutes=60):
+    if DEMO_MODE:
+        return False, "Disponible únicamente con Supabase.", None
+    c = _client()
+    if not c:
+        return False, "No hay conexión autenticada con Supabase.", None
+    if not question_ids:
+        return False, "No hay preguntas para iniciar el simulacro.", None
+
+    payload = {
+        "student_id": student_id,
+        "attempt_type": "simulador_escrito",
+        "career_code": career_code,
+        "status": "en_progreso",
+        "duration_minutes": int(duration_minutes),
+        "question_count": len(question_ids),
+        "metadata": {
+            "question_ids": question_ids,
+            "version": "v1.5",
+            "evaluation_mode": "autoevaluacion_guiada",
+        },
+    }
+
+    try:
+        res = c.table("attempts").insert(payload).execute()
+        if not res.data:
+            return False, "No se pudo crear el intento.", None
+        attempt_id = res.data[0]["id"]
+
+        c.table("attempt_answers").insert([
+            {
+                "attempt_id": attempt_id,
+                "question_id": qid,
+                "answer_text": None,
+                "score": None,
+                "self_score": None,
+                "evaluation_status": "pendiente",
+            }
+            for qid in question_ids
+        ]).execute()
+
+        return True, "Simulacro iniciado.", attempt_id
+    except Exception as e:
+        return False, f"No fue posible iniciar el simulacro: {e}", None
+
+
+def get_attempt(attempt_id):
+    if DEMO_MODE:
+        return None
+    c = _client()
+    if not c or not attempt_id:
+        return None
+    rows = (
+        c.table("attempts")
+        .select(
+            "id,student_id,attempt_type,career_code,started_at,finished_at,"
+            "score,status,duration_minutes,question_count,metadata"
+        )
+        .eq("id", attempt_id)
+        .limit(1)
+        .execute().data or []
+    )
+    return rows[0] if rows else None
+
+
+def get_attempt_answers(attempt_id):
+    if DEMO_MODE:
+        return []
+    c = _client()
+    if not c or not attempt_id:
+        return []
+
+    answers = (
+        c.table("attempt_answers")
+        .select(
+            "id,attempt_id,question_id,answer_text,score,feedback,"
+            "self_score,evaluation_status,answered_at"
+        )
+        .eq("attempt_id", attempt_id)
+        .execute().data or []
+    )
+    if not answers:
+        return []
+
+    qids = [a["question_id"] for a in answers]
+    questions = (
+        c.table("questions")
+        .select(
+            "id,area_id,course_code,topic_id,question_text,expected_answer,"
+            "difficulty,competency,question_type"
+        )
+        .in_("id", qids)
+        .execute().data or []
+    )
+    qmap = {q["id"]: q for q in questions}
+
+    attempt = get_attempt(attempt_id)
+    career = attempt.get("career_code") if attempt else None
+    courses = {
+        x["code"]: x for x in get_courses_for_career(career)
+    } if career else {}
+
+    order = []
+    if attempt:
+        order = (attempt.get("metadata") or {}).get("question_ids", [])
+
+    order_map = {qid: i for i, qid in enumerate(order)}
+
+    out = []
+    for a in answers:
+        row = dict(a)
+        q = qmap.get(a["question_id"], {})
+        row.update({
+            "question_text": q.get("question_text"),
+            "expected_answer": q.get("expected_answer"),
+            "difficulty": q.get("difficulty"),
+            "competency": q.get("competency"),
+            "question_type": q.get("question_type"),
+            "course_code": q.get("course_code"),
+            "area_id": q.get("area_id"),
+            "topic_id": q.get("topic_id"),
+        })
+        course = courses.get(q.get("course_code"), {})
+        row["course_name"] = course.get("name") or q.get("course_code")
+        row["area"] = course.get("area") or "Sin área"
+        out.append(row)
+
+    return sorted(out, key=lambda x: order_map.get(x["question_id"], 999999))
+
+
+def save_attempt_answer(answer_id, answer_text):
+    if DEMO_MODE:
+        return False, "Disponible únicamente con Supabase."
+    c = _client()
+    if not c:
+        return False, "No hay conexión autenticada con Supabase."
+    try:
+        res = (
+            c.table("attempt_answers")
+            .update({
+                "answer_text": answer_text or None,
+                "answered_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", answer_id)
+            .execute()
+        )
+        if not res.data:
+            return False, "No fue posible guardar la respuesta."
+        return True, "Respuesta guardada."
+    except Exception as e:
+        return False, f"No fue posible guardar la respuesta: {e}"
+
+
+def finish_attempt(attempt_id):
+    if DEMO_MODE:
+        return False, "Disponible únicamente con Supabase."
+    c = _client()
+    if not c:
+        return False, "No hay conexión autenticada con Supabase."
+    try:
+        res = (
+            c.table("attempts")
+            .update({
+                "status": "finalizado",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", attempt_id)
+            .execute()
+        )
+        if not res.data:
+            return False, "No fue posible finalizar el intento."
+        return True, "Simulacro finalizado. Ahora realiza la autoevaluación guiada."
+    except Exception as e:
+        return False, f"No fue posible finalizar el intento: {e}"
+
+
+def save_self_evaluation(answer_id, self_score, feedback=None):
+    if DEMO_MODE:
+        return False, "Disponible únicamente con Supabase."
+    c = _client()
+    if not c:
+        return False, "No hay conexión autenticada con Supabase."
+    try:
+        score = float(self_score)
+        res = (
+            c.table("attempt_answers")
+            .update({
+                "self_score": score,
+                "score": score,
+                "feedback": feedback or None,
+                "evaluation_status": "autoevaluado",
+            })
+            .eq("id", answer_id)
+            .execute()
+        )
+        if not res.data:
+            return False, "No se pudo registrar la autoevaluación."
+        return True, "Autoevaluación registrada."
+    except Exception as e:
+        return False, f"No fue posible guardar la autoevaluación: {e}"
+
+
+def recompute_attempt_score(attempt_id):
+    if DEMO_MODE:
+        return None
+    c = _client()
+    if not c:
+        return None
+
+    answers = get_attempt_answers(attempt_id)
+    scored = [
+        float(a["score"])
+        for a in answers
+        if a.get("score") is not None
+    ]
+    final_score = round(sum(scored) / len(scored), 2) if scored else None
+
+    try:
+        c.table("attempts").update({"score": final_score}).eq("id", attempt_id).execute()
+    except Exception:
+        pass
+    return final_score
+
+
+def get_student_attempts(student_id):
+    if DEMO_MODE:
+        return []
+    c = _client()
+    if not c or not student_id:
+        return []
+    return (
+        c.table("attempts")
+        .select(
+            "id,attempt_type,career_code,started_at,finished_at,score,status,"
+            "duration_minutes,question_count,metadata"
+        )
+        .eq("student_id", student_id)
+        .order("started_at", desc=True)
+        .execute().data or []
+    )
+
+
+def get_attempt_diagnostics(attempt_id):
+    answers = get_attempt_answers(attempt_id)
+    if not answers:
+        return {
+            "overall": None,
+            "by_area": [],
+            "by_course": [],
+            "by_competency": [],
+            "by_difficulty": [],
+            "evaluated": 0,
+            "total": 0,
+        }
+
+    evaluated = [a for a in answers if a.get("score") is not None]
+
+    def aggregate(key):
+        groups = {}
+        for a in evaluated:
+            label = a.get(key)
+            if label is None:
+                label = "Sin clasificar"
+            groups.setdefault(str(label), []).append(float(a["score"]))
+        return [
+            {"label": label, "score": round(sum(vals) / len(vals), 2), "n": len(vals)}
+            for label, vals in sorted(groups.items())
+        ]
+
+    overall = (
+        round(sum(float(a["score"]) for a in evaluated) / len(evaluated), 2)
+        if evaluated else None
+    )
+
+    return {
+        "overall": overall,
+        "by_area": aggregate("area"),
+        "by_course": aggregate("course_name"),
+        "by_competency": aggregate("competency"),
+        "by_difficulty": aggregate("difficulty"),
+        "evaluated": len(evaluated),
+        "total": len(answers),
+    }

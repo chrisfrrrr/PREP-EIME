@@ -10,6 +10,10 @@ from modules.data import (
     get_questions_for_career, get_course_careers, get_topics_for_course,
     get_all_questions, create_question, update_question,
     update_question_status, delete_question,
+    build_simulator_question_set, create_attempt, get_attempt,
+    get_attempt_answers, save_attempt_answer, finish_attempt,
+    save_self_evaluation, recompute_attempt_score,
+    get_student_attempts, get_attempt_diagnostics,
     update_program_status, update_program_metadata,
     add_topic, update_topic, delete_topic,
 )
@@ -79,6 +83,7 @@ def sidebar(user):
         "Preparación académica",
         "Biblioteca",
         "Preparación EGP",
+        "Simulador EGP",
         "Mi progreso",
     ]
 
@@ -97,7 +102,7 @@ def sidebar(user):
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("PREP-EIME v1.4 · Banco de Preguntas EGP")
+    st.sidebar.caption("PREP-EIME v1.5 · Simulador EGP")
     if st.sidebar.button("Cerrar sesión"):
         logout()
 
@@ -302,12 +307,519 @@ def egp_view(user):
                 st.info(q.get("expected_answer") or "No se registró una respuesta esperada.")
 
 
-def progress_view(user):
-    page_header("Mi progreso", "Dominio y actividad")
-    st.info(
-        "El seguimiento individual se habilitará al activar "
-        "simuladores e intentos evaluativos."
+
+def _attempt_elapsed_minutes(attempt):
+    from datetime import datetime, timezone
+    if not attempt or not attempt.get("started_at"):
+        return 0
+    try:
+        started = datetime.fromisoformat(attempt["started_at"].replace("Z", "+00:00"))
+        return max(0, int((datetime.now(timezone.utc) - started).total_seconds() // 60))
+    except Exception:
+        return 0
+
+
+def simulator_view(user):
+    page_header(
+        "Simulador EGP",
+        "Simulacro escrito con diagnóstico por área, curso, competencia y dificultad",
     )
+
+    if user["role"] != "estudiante":
+        st.info(
+            "El simulador está diseñado para perfiles de estudiante. "
+            "Para probarlo, utiliza una cuenta de estudiante asociada a una carrera."
+        )
+        return
+
+    career = user.get("career_code")
+    if not career:
+        st.warning("Tu perfil de estudiante no tiene una carrera asignada.")
+        return
+
+    attempts = get_student_attempts(user["id"])
+    active = next((a for a in attempts if a.get("status") == "en_progreso"), None)
+
+    if active:
+        _run_active_attempt(user, active)
+        return
+
+    st.markdown("### Configurar nuevo simulacro")
+    published = get_questions_for_career(career)
+
+    if not published:
+        st.warning(
+            "Todavía no hay preguntas publicadas suficientes para iniciar un simulacro."
+        )
+        return
+
+    courses = {c["code"]: c for c in get_courses_for_career(career)}
+    available_areas = sorted({
+        courses.get(q.get("course_code"), {}).get("area", "Sin área")
+        for q in published
+    })
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        requested_count = st.number_input(
+            "Número de preguntas",
+            min_value=1,
+            max_value=max(1, min(50, len(published))),
+            value=min(10, len(published)),
+            step=1,
+        )
+
+    with c2:
+        duration = st.number_input(
+            "Tiempo sugerido (minutos)",
+            min_value=5,
+            max_value=240,
+            value=60,
+            step=5,
+        )
+
+    with c3:
+        difficulty_levels = st.multiselect(
+            "Dificultad",
+            [1, 2, 3, 4, 5],
+            default=[1, 2, 3, 4, 5],
+        )
+
+    selected_areas = st.multiselect(
+        "Áreas incluidas",
+        available_areas,
+        default=available_areas,
+    )
+
+    st.caption(
+        "v1.5 utiliza autoevaluación guiada para preguntas abiertas: "
+        "primero respondes sin ver la solución y, al terminar, comparas "
+        "tu respuesta con el criterio esperado."
+    )
+
+    if st.button(
+        "Iniciar simulacro",
+        type="primary",
+        use_container_width=True,
+    ):
+        selected = build_simulator_question_set(
+            career_code=career,
+            question_count=requested_count,
+            area_names=selected_areas,
+            difficulty_levels=difficulty_levels,
+        )
+
+        if not selected:
+            st.error("No hay preguntas que cumplan los filtros seleccionados.")
+        else:
+            ok, msg, attempt_id = create_attempt(
+                student_id=user["id"],
+                career_code=career,
+                question_ids=[q["id"] for q in selected],
+                duration_minutes=duration,
+            )
+            _flash(ok, msg)
+            if ok:
+                st.session_state["active_attempt_id"] = attempt_id
+                st.session_state["attempt_index"] = 0
+                st.rerun()
+
+    st.markdown("---")
+    _attempt_history(user)
+
+
+def _run_active_attempt(user, attempt):
+    answers = get_attempt_answers(attempt["id"])
+    if not answers:
+        st.error("El intento no contiene preguntas.")
+        return
+
+    idx = int(st.session_state.get("attempt_index", 0))
+    idx = max(0, min(idx, len(answers) - 1))
+    st.session_state["attempt_index"] = idx
+
+    elapsed = _attempt_elapsed_minutes(attempt)
+    duration = attempt.get("duration_minutes") or 0
+    remaining = max(0, duration - elapsed) if duration else None
+    answered = sum(1 for a in answers if (a.get("answer_text") or "").strip())
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        metric_card("Pregunta", f"{idx+1}/{len(answers)}", "Simulacro")
+    with m2:
+        metric_card("Respondidas", answered, f"de {len(answers)}")
+    with m3:
+        metric_card("Transcurrido", f"{elapsed} min", "Tiempo usado")
+    with m4:
+        metric_card(
+            "Restante",
+            f"{remaining} min" if remaining is not None else "—",
+            "Tiempo sugerido",
+        )
+
+    if remaining == 0 and duration:
+        st.warning(
+            "El tiempo sugerido ya finalizó. Puedes guardar la respuesta actual "
+            "y finalizar el intento."
+        )
+
+    a = answers[idx]
+
+    st.markdown(
+        f"### {a.get('course_code','')} · {a.get('course_name','')}"
+    )
+    st.caption(
+        f"Área: {a.get('area','Sin área')} · "
+        f"Dificultad: {a.get('difficulty','—')}/5 · "
+        f"Competencia: {a.get('competency','—')} · "
+        f"Tipo: {a.get('question_type','—')}"
+    )
+    st.markdown("#### Pregunta")
+    st.write(a.get("question_text") or "")
+
+    answer_key = f"sim_answer_{a['id']}"
+    current = st.session_state.get(answer_key, a.get("answer_text") or "")
+    response = st.text_area(
+        "Tu respuesta",
+        value=current,
+        height=260,
+        key=answer_key,
+        placeholder=(
+            "Desarrolla tu procedimiento, análisis, criterios de diseño "
+            "o explicación técnica."
+        ),
+    )
+
+    if st.button(
+        "Guardar respuesta",
+        use_container_width=True,
+        key=f"save_answer_{a['id']}",
+    ):
+        ok, msg = save_attempt_answer(a["id"], response)
+        _flash(ok, msg)
+        if ok:
+            st.rerun()
+
+    nav1, nav2, nav3 = st.columns([1, 1, 2])
+
+    with nav1:
+        if st.button(
+            "← Anterior",
+            disabled=idx == 0,
+            use_container_width=True,
+        ):
+            save_attempt_answer(a["id"], response)
+            st.session_state["attempt_index"] = idx - 1
+            st.rerun()
+
+    with nav2:
+        if st.button(
+            "Siguiente →",
+            disabled=idx == len(answers) - 1,
+            use_container_width=True,
+        ):
+            save_attempt_answer(a["id"], response)
+            st.session_state["attempt_index"] = idx + 1
+            st.rerun()
+
+    with nav3:
+        confirm_finish = st.checkbox(
+            "Confirmo que deseo entregar el simulacro",
+            key=f"confirm_finish_{attempt['id']}",
+        )
+        if st.button(
+            "Finalizar y entregar",
+            type="primary",
+            disabled=not confirm_finish,
+            use_container_width=True,
+        ):
+            save_attempt_answer(a["id"], response)
+            ok, msg = finish_attempt(attempt["id"])
+            _flash(ok, msg)
+            if ok:
+                st.session_state.pop("active_attempt_id", None)
+                st.session_state.pop("attempt_index", None)
+                st.session_state["review_attempt_id"] = attempt["id"]
+                st.rerun()
+
+
+def _attempt_history(user):
+    attempts = get_student_attempts(user["id"])
+    completed = [a for a in attempts if a.get("status") == "finalizado"]
+
+    st.markdown("### Historial de simulacros")
+    if not completed:
+        st.info("Todavía no has finalizado simulacros.")
+        return
+
+    rows = []
+    for a in completed:
+        rows.append({
+            "Fecha": (a.get("started_at") or "")[:16].replace("T", " "),
+            "Preguntas": a.get("question_count"),
+            "Duración": f"{a.get('duration_minutes') or '—'} min",
+            "Resultado": (
+                f"{float(a['score']):.1f}%"
+                if a.get("score") is not None
+                else "Pendiente de autoevaluación"
+            ),
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    labels = {
+        (
+            f"{(a.get('started_at') or '')[:16].replace('T',' ')} · "
+            f"{a.get('question_count','—')} preguntas · "
+            f"{float(a['score']):.1f}%"
+            if a.get("score") is not None
+            else (
+                f"{(a.get('started_at') or '')[:16].replace('T',' ')} · "
+                f"{a.get('question_count','—')} preguntas · Pendiente"
+            )
+        ): a
+        for a in completed
+    }
+
+    selected_label = st.selectbox(
+        "Revisar intento",
+        list(labels.keys()),
+        key="history_attempt",
+    )
+    selected = labels[selected_label]
+
+    if st.button(
+        "Abrir revisión y diagnóstico",
+        use_container_width=True,
+    ):
+        st.session_state["review_attempt_id"] = selected["id"]
+        st.rerun()
+
+
+def attempt_review_view(user):
+    attempt_id = st.session_state.get("review_attempt_id")
+    if not attempt_id:
+        st.info("Selecciona un simulacro finalizado desde el historial.")
+        return
+
+    attempt = get_attempt(attempt_id)
+    if not attempt:
+        st.error("No fue posible recuperar el intento.")
+        return
+
+    answers = get_attempt_answers(attempt_id)
+
+    page_header(
+        "Revisión del simulacro",
+        "Compara tus respuestas con los criterios esperados y califica tu nivel de dominio",
+    )
+
+    st.warning(
+        "Esta versión utiliza autoevaluación guiada para preguntas abiertas. "
+        "La puntuación no sustituye la revisión docente; sirve como diagnóstico de estudio."
+    )
+
+    evaluated = 0
+    for i, a in enumerate(answers, 1):
+        with st.expander(
+            f"{i}. {a.get('course_code','')} · "
+            f"{a.get('course_name','')} · "
+            f"{'Evaluada' if a.get('score') is not None else 'Pendiente'}",
+            expanded=(a.get("score") is None and i == 1),
+        ):
+            st.markdown("**Pregunta**")
+            st.write(a.get("question_text") or "")
+
+            st.markdown("**Tu respuesta**")
+            st.write(a.get("answer_text") or "Sin respuesta.")
+
+            st.markdown("**Respuesta esperada / criterio de evaluación**")
+            st.info(
+                a.get("expected_answer")
+                or "No se registró una respuesta esperada para esta pregunta."
+            )
+
+            current_score = int(round(float(a.get("self_score") or 0)))
+            score = st.slider(
+                "¿Qué porcentaje del criterio consideras que cumpliste?",
+                min_value=0,
+                max_value=100,
+                value=current_score,
+                step=5,
+                key=f"self_score_{a['id']}",
+            )
+            feedback = st.text_area(
+                "Reflexión breve: ¿qué debes reforzar?",
+                value=a.get("feedback") or "",
+                height=90,
+                key=f"self_feedback_{a['id']}",
+            )
+
+            if st.button(
+                "Guardar autoevaluación",
+                key=f"save_self_{a['id']}",
+            ):
+                ok, msg = save_self_evaluation(
+                    a["id"],
+                    score,
+                    feedback,
+                )
+                _flash(ok, msg)
+                if ok:
+                    recompute_attempt_score(attempt_id)
+                    st.rerun()
+
+            if a.get("score") is not None:
+                evaluated += 1
+
+    if evaluated == len(answers) and answers:
+        recompute_attempt_score(attempt_id)
+        st.markdown("---")
+        st.success("Autoevaluación completa. Ya puedes consultar tu diagnóstico.")
+        _diagnostic_panel(attempt_id)
+    else:
+        st.info(
+            f"Has evaluado {evaluated} de {len(answers)} respuestas. "
+            "Completa todas para generar el diagnóstico integral."
+        )
+
+    if st.button("← Volver al simulador"):
+        st.session_state.pop("review_attempt_id", None)
+        st.rerun()
+
+
+def _diagnostic_panel(attempt_id):
+    diag = get_attempt_diagnostics(attempt_id)
+
+    if diag["overall"] is None:
+        st.info("Aún no hay puntuaciones suficientes.")
+        return
+
+    st.markdown("## Diagnóstico")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        metric_card(
+            "Resultado global",
+            f"{diag['overall']:.1f}%",
+            "Autoevaluación guiada",
+        )
+
+    area_sorted = sorted(
+        diag["by_area"],
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+    strongest = area_sorted[0]["label"] if area_sorted else "—"
+    weakest = area_sorted[-1]["label"] if area_sorted else "—"
+
+    with c2:
+        metric_card("Fortaleza principal", strongest, "Mayor promedio")
+    with c3:
+        metric_card("Área prioritaria", weakest, "Menor promedio")
+
+    st.markdown("### Desempeño por área")
+    if diag["by_area"]:
+        area_df = pd.DataFrame(diag["by_area"]).rename(
+            columns={"label": "Área", "score": "Resultado (%)", "n": "Preguntas"}
+        )
+        st.dataframe(area_df, use_container_width=True, hide_index=True)
+        st.bar_chart(area_df.set_index("Área")["Resultado (%)"])
+
+    st.markdown("### Desempeño por competencia")
+    if diag["by_competency"]:
+        comp_df = pd.DataFrame(diag["by_competency"]).rename(
+            columns={
+                "label": "Competencia",
+                "score": "Resultado (%)",
+                "n": "Preguntas",
+            }
+        )
+        st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Desempeño por dificultad")
+    if diag["by_difficulty"]:
+        diff_df = pd.DataFrame(diag["by_difficulty"]).rename(
+            columns={
+                "label": "Dificultad",
+                "score": "Resultado (%)",
+                "n": "Preguntas",
+            }
+        )
+        st.dataframe(diff_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Desempeño por curso")
+    if diag["by_course"]:
+        course_df = pd.DataFrame(diag["by_course"]).rename(
+            columns={
+                "label": "Curso",
+                "score": "Resultado (%)",
+                "n": "Preguntas",
+            }
+        )
+        st.dataframe(course_df, use_container_width=True, hide_index=True)
+
+
+def progress_view(user):
+    page_header("Mi progreso", "Historial y diagnóstico acumulado")
+
+    if user["role"] != "estudiante":
+        st.info("El progreso individual se muestra en perfiles de estudiante.")
+        return
+
+    attempts = get_student_attempts(user["id"])
+    completed = [a for a in attempts if a.get("status") == "finalizado"]
+
+    if not completed:
+        st.info("Aún no hay simulacros finalizados.")
+        return
+
+    scored = [a for a in completed if a.get("score") is not None]
+    average = (
+        sum(float(a["score"]) for a in scored) / len(scored)
+        if scored else None
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        metric_card("Simulacros", len(completed), "Finalizados")
+    with c2:
+        metric_card(
+            "Promedio",
+            f"{average:.1f}%" if average is not None else "—",
+            "Intentos evaluados",
+        )
+    with c3:
+        metric_card(
+            "Preguntas practicadas",
+            sum(int(a.get("question_count") or 0) for a in completed),
+            "Acumulado",
+        )
+
+    rows = []
+    for a in completed:
+        rows.append({
+            "Fecha": (a.get("started_at") or "")[:10],
+            "Preguntas": a.get("question_count"),
+            "Resultado": float(a["score"]) if a.get("score") is not None else None,
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    if not df.empty and df["Resultado"].notna().any():
+        chart = df.dropna(subset=["Resultado"]).copy()
+        chart["Intento"] = range(1, len(chart) + 1)
+        st.markdown("### Evolución del desempeño")
+        st.line_chart(chart.set_index("Intento")["Resultado"])
+
+    st.markdown("---")
+    _attempt_history(user)
 
 
 def management_view(user):
@@ -1106,6 +1618,11 @@ elif section == "Biblioteca":
     library_view(user)
 elif section == "Preparación EGP":
     egp_view(user)
+elif section == "Simulador EGP":
+    if st.session_state.get("review_attempt_id"):
+        attempt_review_view(user)
+    else:
+        simulator_view(user)
 elif section == "Mi progreso":
     progress_view(user)
 elif section == "Gestión académica":
