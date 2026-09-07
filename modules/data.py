@@ -89,3 +89,102 @@ def get_questions_for_career(career_code):
     ids=[x["question_id"] for x in links]
     if not ids: return []
     return c.table("questions").select("id,area_id,course_code,topic_id,question_text,expected_answer,difficulty,competency,question_type,status").in_("id",ids).eq("status","publicado").execute().data or []
+
+
+CONTENT_STATUSES = ["borrador","en_revision","aprobado","publicado","archivado"]
+
+
+def get_program(program_id):
+    if DEMO_MODE: return None
+    c=_client()
+    if not c or not program_id: return None
+    rows=(c.table("course_programs")
+          .select("id,course_code,version_label,effective_year,source_note,status,created_by,created_at")
+          .eq("id",program_id).limit(1).execute().data or [])
+    return rows[0] if rows else None
+
+
+def update_program_status(program_id, new_status):
+    if DEMO_MODE: return False, "Disponible únicamente con Supabase."
+    if new_status not in CONTENT_STATUSES:
+        return False, "Estado no válido."
+    c=_client()
+    if not c: return False, "No hay conexión autenticada con Supabase."
+    try:
+        res=(c.table("course_programs")
+             .update({"status":new_status})
+             .eq("id",program_id).execute())
+        if not res.data:
+            return False, "Supabase no autorizó el cambio o no encontró el programa."
+        return True, "Estado actualizado."
+    except Exception as e:
+        return False, f"No fue posible actualizar el estado: {e}"
+
+
+def update_program_metadata(program_id, version_label, effective_year, source_note):
+    if DEMO_MODE: return False, "Disponible únicamente con Supabase."
+    c=_client()
+    if not c: return False, "No hay conexión autenticada con Supabase."
+    payload={
+        "version_label": (version_label or "").strip(),
+        "effective_year": int(effective_year) if effective_year else None,
+        "source_note": (source_note or "").strip() or None,
+    }
+    try:
+        res=c.table("course_programs").update(payload).eq("id",program_id).execute()
+        if not res.data: return False, "No se pudo actualizar el programa."
+        return True, "Programa actualizado."
+    except Exception as e:
+        return False, f"No fue posible actualizar el programa: {e}"
+
+
+def add_topic(program_id, title, sort_order, body_md="", status="borrador"):
+    if DEMO_MODE: return False, "Disponible únicamente con Supabase."
+    c=_client()
+    if not c: return False, "No hay conexión autenticada con Supabase."
+    payload={
+        "course_program_id": program_id,
+        "parent_id": None,
+        "title": (title or "").strip(),
+        "sort_order": int(sort_order or 0),
+        "body_md": body_md or None,
+        "status": status,
+    }
+    if not payload["title"]: return False, "El título es obligatorio."
+    try:
+        res=c.table("topics").insert(payload).execute()
+        if not res.data: return False, "No se pudo crear la unidad/tema."
+        return True, "Unidad/tema creado."
+    except Exception as e:
+        return False, f"No fue posible crear la unidad/tema: {e}"
+
+
+def update_topic(topic_id, title, sort_order, body_md, status):
+    if DEMO_MODE: return False, "Disponible únicamente con Supabase."
+    if status not in CONTENT_STATUSES: return False, "Estado no válido."
+    c=_client()
+    if not c: return False, "No hay conexión autenticada con Supabase."
+    payload={
+        "title": (title or "").strip(),
+        "sort_order": int(sort_order or 0),
+        "body_md": body_md or None,
+        "status": status,
+    }
+    if not payload["title"]: return False, "El título es obligatorio."
+    try:
+        res=c.table("topics").update(payload).eq("id",topic_id).execute()
+        if not res.data: return False, "No se pudo actualizar la unidad/tema."
+        return True, "Unidad/tema actualizado."
+    except Exception as e:
+        return False, f"No fue posible actualizar la unidad/tema: {e}"
+
+
+def delete_topic(topic_id):
+    if DEMO_MODE: return False, "Disponible únicamente con Supabase."
+    c=_client()
+    if not c: return False, "No hay conexión autenticada con Supabase."
+    try:
+        c.table("topics").delete().eq("id",topic_id).execute()
+        return True, "Unidad/tema eliminado."
+    except Exception as e:
+        return False, f"No fue posible eliminar la unidad/tema: {e}"
