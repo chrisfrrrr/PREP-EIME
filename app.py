@@ -14,6 +14,12 @@ from modules.data import (
     get_attempt_answers, save_attempt_answer, finish_attempt,
     save_self_evaluation, recompute_attempt_score,
     get_student_attempts, get_attempt_diagnostics,
+    EVALUATION_MODES, STRUCTURED_QUESTION_TYPES,
+    get_all_questions_v16, create_question_v16, update_question_v16,
+    build_simulator_question_set_v16, get_attempt_answers_v16,
+    finalize_autograded_answers, save_self_evaluation_v16,
+    recompute_attempt_score_v16, get_attempt_diagnostics_v16,
+    review_answer_with_rubric, get_staff_attempts, get_profiles_by_ids,
     update_program_status, update_program_metadata,
     add_topic, update_topic, delete_topic,
 )
@@ -88,11 +94,12 @@ def sidebar(user):
     ]
 
     if user["role"] == "docente":
-        common += ["Gestión académica", "Banco de preguntas"]
+        common += ["Gestión académica", "Banco de preguntas", "Revisión de respuestas"]
     elif user["role"] in ("coordinador", "administrador"):
         common += [
             "Gestión académica",
             "Banco de preguntas",
+            "Revisión de respuestas",
             "Usuarios y cohortes",
             "Analítica",
         ]
@@ -102,7 +109,7 @@ def sidebar(user):
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("PREP-EIME v1.5 · Simulador EGP")
+    st.sidebar.caption("PREP-EIME v1.6 · Evaluación estructurada")
     if st.sidebar.button("Cerrar sesión"):
         logout()
 
@@ -322,37 +329,31 @@ def _attempt_elapsed_minutes(attempt):
 def simulator_view(user):
     page_header(
         "Simulador EGP",
-        "Simulacro escrito con diagnóstico por área, curso, competencia y dificultad",
+        "Simulacro escrito con calificación automática, autoevaluación y rúbricas",
     )
 
     if user["role"] != "estudiante":
-        st.info(
-            "El simulador está diseñado para perfiles de estudiante. "
-            "Para probarlo, utiliza una cuenta de estudiante asociada a una carrera."
-        )
+        st.info("El simulador está diseñado para perfiles de estudiante.")
         return
 
     career = user.get("career_code")
     if not career:
-        st.warning("Tu perfil de estudiante no tiene una carrera asignada.")
+        st.warning("Tu perfil no tiene una carrera asignada.")
         return
 
     attempts = get_student_attempts(user["id"])
     active = next((a for a in attempts if a.get("status") == "en_progreso"), None)
 
     if active:
-        _run_active_attempt(user, active)
+        _run_active_attempt_v16(user, active)
+        return
+
+    published = get_published_questions_for_simulator_v16(career)
+    if not published:
+        st.warning("Todavía no hay preguntas publicadas para tu carrera.")
         return
 
     st.markdown("### Configurar nuevo simulacro")
-    published = get_questions_for_career(career)
-
-    if not published:
-        st.warning(
-            "Todavía no hay preguntas publicadas suficientes para iniciar un simulacro."
-        )
-        return
-
     courses = {c["code"]: c for c in get_courses_for_career(career)}
     available_areas = sorted({
         courses.get(q.get("course_code"), {}).get("area", "Sin área")
@@ -360,64 +361,49 @@ def simulator_view(user):
     })
 
     c1, c2, c3 = st.columns(3)
-
     with c1:
         requested_count = st.number_input(
-            "Número de preguntas",
-            min_value=1,
+            "Número de preguntas", min_value=1,
             max_value=max(1, min(50, len(published))),
-            value=min(10, len(published)),
-            step=1,
+            value=min(10, len(published)), step=1
         )
-
     with c2:
         duration = st.number_input(
             "Tiempo sugerido (minutos)",
-            min_value=5,
-            max_value=240,
-            value=60,
-            step=5,
+            min_value=5, max_value=240, value=60, step=5
         )
-
     with c3:
         difficulty_levels = st.multiselect(
-            "Dificultad",
-            [1, 2, 3, 4, 5],
-            default=[1, 2, 3, 4, 5],
+            "Dificultad", [1,2,3,4,5], default=[1,2,3,4,5]
         )
 
     selected_areas = st.multiselect(
-        "Áreas incluidas",
-        available_areas,
-        default=available_areas,
+        "Áreas incluidas", available_areas, default=available_areas
     )
+
+    mode_counts = {}
+    for q in published:
+        mode = q.get("evaluation_mode") or "autoevaluacion"
+        mode_counts[mode] = mode_counts.get(mode, 0) + 1
 
     st.caption(
-        "v1.5 utiliza autoevaluación guiada para preguntas abiertas: "
-        "primero respondes sin ver la solución y, al terminar, comparas "
-        "tu respuesta con el criterio esperado."
+        "Banco disponible: " +
+        " · ".join(
+            f"{EVALUATION_MODES.get(k,k)}: {v}"
+            for k, v in sorted(mode_counts.items())
+        )
     )
 
-    if st.button(
-        "Iniciar simulacro",
-        type="primary",
-        use_container_width=True,
-    ):
-        selected = build_simulator_question_set(
-            career_code=career,
-            question_count=requested_count,
-            area_names=selected_areas,
-            difficulty_levels=difficulty_levels,
+    if st.button("Iniciar simulacro", type="primary", use_container_width=True):
+        selected = build_simulator_question_set_v16(
+            career, requested_count, selected_areas, difficulty_levels
         )
-
         if not selected:
-            st.error("No hay preguntas que cumplan los filtros seleccionados.")
+            st.error("No hay preguntas que cumplan los filtros.")
         else:
             ok, msg, attempt_id = create_attempt(
-                student_id=user["id"],
-                career_code=career,
-                question_ids=[q["id"] for q in selected],
-                duration_minutes=duration,
+                user["id"], career,
+                [q["id"] for q in selected], duration
             )
             _flash(ok, msg)
             if ok:
@@ -429,14 +415,48 @@ def simulator_view(user):
     _attempt_history(user)
 
 
-def _run_active_attempt(user, attempt):
-    answers = get_attempt_answers(attempt["id"])
+def _render_student_answer_widget(a):
+    qtype = a.get("question_type")
+    cfg = a.get("answer_config") or {}
+    key = f"sim_answer_{a['id']}"
+    current = st.session_state.get(key, a.get("answer_text") or "")
+
+    if qtype == "Opción múltiple":
+        options = cfg.get("options") or []
+        display = ["— Selecciona una opción —"] + options
+        initial = display.index(current) if current in display else 0
+        selected = st.radio(
+            "Tu respuesta", display, index=initial, key=key
+        )
+        return "" if selected.startswith("—") else selected
+
+    if qtype == "Respuesta numérica":
+        unit = cfg.get("unit") or ""
+        value = st.text_input(
+            f"Tu respuesta numérica{f' ({unit})' if unit else ''}",
+            value=current,
+            key=key,
+            placeholder="Ejemplo: 12.75",
+        )
+        return value
+
+    return st.text_area(
+        "Tu respuesta",
+        value=current,
+        height=260,
+        key=key,
+        placeholder="Desarrolla tu procedimiento, análisis o justificación técnica.",
+    )
+
+
+def _run_active_attempt_v16(user, attempt):
+    answers = get_attempt_answers_v16(attempt["id"])
     if not answers:
         st.error("El intento no contiene preguntas.")
         return
 
     idx = int(st.session_state.get("attempt_index", 0))
-    idx = max(0, min(idx, len(answers) - 1))
+    idx = max(0, min(idx, len(answers)-1))
     st.session_state["attempt_index"] = idx
 
     elapsed = _attempt_elapsed_minutes(attempt)
@@ -444,7 +464,7 @@ def _run_active_attempt(user, attempt):
     remaining = max(0, duration - elapsed) if duration else None
     answered = sum(1 for a in answers if (a.get("answer_text") or "").strip())
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1,m2,m3,m4 = st.columns(4)
     with m1:
         metric_card("Pregunta", f"{idx+1}/{len(answers)}", "Simulacro")
     with m2:
@@ -452,81 +472,43 @@ def _run_active_attempt(user, attempt):
     with m3:
         metric_card("Transcurrido", f"{elapsed} min", "Tiempo usado")
     with m4:
-        metric_card(
-            "Restante",
-            f"{remaining} min" if remaining is not None else "—",
-            "Tiempo sugerido",
-        )
-
-    if remaining == 0 and duration:
-        st.warning(
-            "El tiempo sugerido ya finalizó. Puedes guardar la respuesta actual "
-            "y finalizar el intento."
-        )
+        metric_card("Restante", f"{remaining} min" if remaining is not None else "—", "Tiempo sugerido")
 
     a = answers[idx]
-
-    st.markdown(
-        f"### {a.get('course_code','')} · {a.get('course_name','')}"
-    )
+    st.markdown(f"### {a.get('course_code','')} · {a.get('course_name','')}")
     st.caption(
         f"Área: {a.get('area','Sin área')} · "
         f"Dificultad: {a.get('difficulty','—')}/5 · "
         f"Competencia: {a.get('competency','—')} · "
-        f"Tipo: {a.get('question_type','—')}"
+        f"Tipo: {a.get('question_type','—')} · "
+        f"Evaluación: {EVALUATION_MODES.get(a.get('evaluation_mode'),'—')}"
     )
     st.markdown("#### Pregunta")
     st.write(a.get("question_text") or "")
 
-    answer_key = f"sim_answer_{a['id']}"
-    current = st.session_state.get(answer_key, a.get("answer_text") or "")
-    response = st.text_area(
-        "Tu respuesta",
-        value=current,
-        height=260,
-        key=answer_key,
-        placeholder=(
-            "Desarrolla tu procedimiento, análisis, criterios de diseño "
-            "o explicación técnica."
-        ),
-    )
+    response = _render_student_answer_widget(a)
 
-    if st.button(
-        "Guardar respuesta",
-        use_container_width=True,
-        key=f"save_answer_{a['id']}",
-    ):
+    if st.button("Guardar respuesta", use_container_width=True, key=f"save_answer_v16_{a['id']}"):
         ok, msg = save_attempt_answer(a["id"], response)
         _flash(ok, msg)
         if ok:
             st.rerun()
 
-    nav1, nav2, nav3 = st.columns([1, 1, 2])
-
+    nav1,nav2,nav3 = st.columns([1,1,2])
     with nav1:
-        if st.button(
-            "← Anterior",
-            disabled=idx == 0,
-            use_container_width=True,
-        ):
+        if st.button("← Anterior", disabled=idx==0, use_container_width=True):
             save_attempt_answer(a["id"], response)
-            st.session_state["attempt_index"] = idx - 1
+            st.session_state["attempt_index"] = idx-1
             st.rerun()
-
     with nav2:
-        if st.button(
-            "Siguiente →",
-            disabled=idx == len(answers) - 1,
-            use_container_width=True,
-        ):
+        if st.button("Siguiente →", disabled=idx==len(answers)-1, use_container_width=True):
             save_attempt_answer(a["id"], response)
-            st.session_state["attempt_index"] = idx + 1
+            st.session_state["attempt_index"] = idx+1
             st.rerun()
-
     with nav3:
         confirm_finish = st.checkbox(
             "Confirmo que deseo entregar el simulacro",
-            key=f"confirm_finish_{attempt['id']}",
+            key=f"confirm_finish_v16_{attempt['id']}"
         )
         if st.button(
             "Finalizar y entregar",
@@ -536,156 +518,108 @@ def _run_active_attempt(user, attempt):
         ):
             save_attempt_answer(a["id"], response)
             ok, msg = finish_attempt(attempt["id"])
+            if ok:
+                finalize_autograded_answers(attempt["id"])
             _flash(ok, msg)
             if ok:
-                st.session_state.pop("active_attempt_id", None)
                 st.session_state.pop("attempt_index", None)
                 st.session_state["review_attempt_id"] = attempt["id"]
                 st.rerun()
 
 
-def _attempt_history(user):
-    attempts = get_student_attempts(user["id"])
-    completed = [a for a in attempts if a.get("status") == "finalizado"]
-
-    st.markdown("### Historial de simulacros")
-    if not completed:
-        st.info("Todavía no has finalizado simulacros.")
-        return
-
-    rows = []
-    for a in completed:
-        rows.append({
-            "Fecha": (a.get("started_at") or "")[:16].replace("T", " "),
-            "Preguntas": a.get("question_count"),
-            "Duración": f"{a.get('duration_minutes') or '—'} min",
-            "Resultado": (
-                f"{float(a['score']):.1f}%"
-                if a.get("score") is not None
-                else "Pendiente de autoevaluación"
-            ),
-        })
-
-    st.dataframe(
-        pd.DataFrame(rows),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    labels = {
-        (
-            f"{(a.get('started_at') or '')[:16].replace('T',' ')} · "
-            f"{a.get('question_count','—')} preguntas · "
-            f"{float(a['score']):.1f}%"
-            if a.get("score") is not None
-            else (
-                f"{(a.get('started_at') or '')[:16].replace('T',' ')} · "
-                f"{a.get('question_count','—')} preguntas · Pendiente"
-            )
-        ): a
-        for a in completed
-    }
-
-    selected_label = st.selectbox(
-        "Revisar intento",
-        list(labels.keys()),
-        key="history_attempt",
-    )
-    selected = labels[selected_label]
-
-    if st.button(
-        "Abrir revisión y diagnóstico",
-        use_container_width=True,
-    ):
-        st.session_state["review_attempt_id"] = selected["id"]
-        st.rerun()
-
-
 def attempt_review_view(user):
     attempt_id = st.session_state.get("review_attempt_id")
     if not attempt_id:
-        st.info("Selecciona un simulacro finalizado desde el historial.")
+        st.info("Selecciona un simulacro finalizado.")
         return
 
     attempt = get_attempt(attempt_id)
-    if not attempt:
-        st.error("No fue posible recuperar el intento.")
-        return
-
-    answers = get_attempt_answers(attempt_id)
+    answers = get_attempt_answers_v16(attempt_id)
 
     page_header(
         "Revisión del simulacro",
-        "Compara tus respuestas con los criterios esperados y califica tu nivel de dominio",
+        "Resultados automáticos, autoevaluación guiada y respuestas pendientes de revisión docente",
     )
 
-    st.warning(
-        "Esta versión utiliza autoevaluación guiada para preguntas abiertas. "
-        "La puntuación no sustituye la revisión docente; sirve como diagnóstico de estudio."
-    )
+    for i,a in enumerate(answers,1):
+        mode = a.get("evaluation_mode") or "autoevaluacion"
+        status = a.get("evaluation_status")
 
-    evaluated = 0
-    for i, a in enumerate(answers, 1):
         with st.expander(
-            f"{i}. {a.get('course_code','')} · "
-            f"{a.get('course_name','')} · "
-            f"{'Evaluada' if a.get('score') is not None else 'Pendiente'}",
-            expanded=(a.get("score") is None and i == 1),
+            f"{i}. {a.get('course_code','')} · {a.get('course_name','')} · "
+            f"{EVALUATION_MODES.get(mode,mode)}"
         ):
             st.markdown("**Pregunta**")
             st.write(a.get("question_text") or "")
-
             st.markdown("**Tu respuesta**")
             st.write(a.get("answer_text") or "Sin respuesta.")
 
-            st.markdown("**Respuesta esperada / criterio de evaluación**")
-            st.info(
-                a.get("expected_answer")
-                or "No se registró una respuesta esperada para esta pregunta."
-            )
+            if mode == "autocalificable":
+                st.markdown("**Resultado automático**")
+                if a.get("auto_score") is not None:
+                    st.metric("Puntuación", f"{float(a['auto_score']):.0f}%")
+                    st.caption(a.get("feedback") or "")
+                st.markdown("**Explicación / respuesta esperada**")
+                st.info(a.get("expected_answer") or "Sin explicación adicional.")
 
-            current_score = int(round(float(a.get("self_score") or 0)))
-            score = st.slider(
-                "¿Qué porcentaje del criterio consideras que cumpliste?",
-                min_value=0,
-                max_value=100,
-                value=current_score,
-                step=5,
-                key=f"self_score_{a['id']}",
-            )
-            feedback = st.text_area(
-                "Reflexión breve: ¿qué debes reforzar?",
-                value=a.get("feedback") or "",
-                height=90,
-                key=f"self_feedback_{a['id']}",
-            )
-
-            if st.button(
-                "Guardar autoevaluación",
-                key=f"save_self_{a['id']}",
-            ):
-                ok, msg = save_self_evaluation(
-                    a["id"],
-                    score,
-                    feedback,
+            elif mode == "autoevaluacion":
+                st.markdown("**Respuesta esperada / criterio**")
+                st.info(a.get("expected_answer") or "Sin criterio registrado.")
+                score = st.slider(
+                    "Porcentaje de cumplimiento",
+                    0,100,
+                    value=int(round(float(a.get("self_score") or 0))),
+                    step=5,
+                    key=f"self_score_v16_{a['id']}",
                 )
-                _flash(ok, msg)
-                if ok:
-                    recompute_attempt_score(attempt_id)
-                    st.rerun()
+                feedback = st.text_area(
+                    "¿Qué debes reforzar?",
+                    value=a.get("feedback") or "",
+                    height=90,
+                    key=f"self_feedback_v16_{a['id']}",
+                )
+                if st.button("Guardar autoevaluación", key=f"save_self_v16_{a['id']}"):
+                    ok,msg = save_self_evaluation_v16(a["id"], score, feedback)
+                    _flash(ok,msg)
+                    if ok:
+                        recompute_attempt_score_v16(attempt_id)
+                        st.rerun()
 
-            if a.get("score") is not None:
-                evaluated += 1
+            elif mode == "rubrica":
+                st.markdown("**Estado**")
+                if status == "revisado":
+                    st.success(f"Revisada por el equipo académico · {float(a.get('review_score') or 0):.0f}%")
+                    if a.get("feedback"):
+                        st.write(a["feedback"])
+                else:
+                    st.warning("Pendiente de revisión docente.")
+                if a.get("rubric"):
+                    st.markdown("**Rúbrica de referencia**")
+                    st.dataframe(pd.DataFrame(a["rubric"]), use_container_width=True, hide_index=True)
 
-    if evaluated == len(answers) and answers:
-        recompute_attempt_score(attempt_id)
-        st.markdown("---")
-        st.success("Autoevaluación completa. Ya puedes consultar tu diagnóstico.")
-        _diagnostic_panel(attempt_id)
-    else:
+    recompute_attempt_score_v16(attempt_id)
+    diag = get_attempt_diagnostics_v16(attempt_id)
+
+    st.markdown("---")
+    st.markdown("## Estado del resultado")
+    c1,c2,c3 = st.columns(3)
+    with c1:
+        metric_card(
+            "Resultado actual",
+            f"{diag['overall']:.1f}%" if diag["overall"] is not None else "—",
+            "Solo respuestas evaluadas",
+        )
+    with c2:
+        metric_card("Evaluadas", diag["evaluated"], f"de {diag['total']}")
+    with c3:
+        metric_card("Pendientes docente", diag["pending_review"], "Con rúbrica")
+
+    if diag["evaluated"]:
+        _diagnostic_panel_v16(attempt_id)
+
+    if diag["pending_review"]:
         st.info(
-            f"Has evaluado {evaluated} de {len(answers)} respuestas. "
-            "Completa todas para generar el diagnóstico integral."
+            "El resultado puede cambiar cuando el docente revise las respuestas con rúbrica."
         )
 
     if st.button("← Volver al simulador"):
@@ -693,76 +627,44 @@ def attempt_review_view(user):
         st.rerun()
 
 
-def _diagnostic_panel(attempt_id):
-    diag = get_attempt_diagnostics(attempt_id)
-
+def _diagnostic_panel_v16(attempt_id):
+    diag = get_attempt_diagnostics_v16(attempt_id)
     if diag["overall"] is None:
-        st.info("Aún no hay puntuaciones suficientes.")
         return
 
-    st.markdown("## Diagnóstico")
-    c1, c2, c3 = st.columns(3)
+    st.markdown("### Diagnóstico")
+    area_sorted = sorted(diag["by_area"], key=lambda x: x["score"], reverse=True)
+    if area_sorted:
+        c1,c2 = st.columns(2)
+        with c1:
+            metric_card("Fortaleza", area_sorted[0]["label"], f"{area_sorted[0]['score']:.1f}%")
+        with c2:
+            metric_card("Área prioritaria", area_sorted[-1]["label"], f"{area_sorted[-1]['score']:.1f}%")
 
-    with c1:
-        metric_card(
-            "Resultado global",
-            f"{diag['overall']:.1f}%",
-            "Autoevaluación guiada",
-        )
-
-    area_sorted = sorted(
-        diag["by_area"],
-        key=lambda x: x["score"],
-        reverse=True,
-    )
-    strongest = area_sorted[0]["label"] if area_sorted else "—"
-    weakest = area_sorted[-1]["label"] if area_sorted else "—"
-
-    with c2:
-        metric_card("Fortaleza principal", strongest, "Mayor promedio")
-    with c3:
-        metric_card("Área prioritaria", weakest, "Menor promedio")
-
-    st.markdown("### Desempeño por área")
     if diag["by_area"]:
-        area_df = pd.DataFrame(diag["by_area"]).rename(
-            columns={"label": "Área", "score": "Resultado (%)", "n": "Preguntas"}
+        df = pd.DataFrame(diag["by_area"]).rename(
+            columns={"label":"Área","score":"Resultado (%)","n":"Preguntas"}
         )
-        st.dataframe(area_df, use_container_width=True, hide_index=True)
-        st.bar_chart(area_df.set_index("Área")["Resultado (%)"])
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        st.bar_chart(df.set_index("Área")["Resultado (%)"])
 
-    st.markdown("### Desempeño por competencia")
     if diag["by_competency"]:
-        comp_df = pd.DataFrame(diag["by_competency"]).rename(
-            columns={
-                "label": "Competencia",
-                "score": "Resultado (%)",
-                "n": "Preguntas",
-            }
+        st.markdown("#### Por competencia")
+        st.dataframe(
+            pd.DataFrame(diag["by_competency"]).rename(
+                columns={"label":"Competencia","score":"Resultado (%)","n":"Preguntas"}
+            ),
+            use_container_width=True, hide_index=True
         )
-        st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
-    st.markdown("### Desempeño por dificultad")
     if diag["by_difficulty"]:
-        diff_df = pd.DataFrame(diag["by_difficulty"]).rename(
-            columns={
-                "label": "Dificultad",
-                "score": "Resultado (%)",
-                "n": "Preguntas",
-            }
+        st.markdown("#### Por dificultad")
+        st.dataframe(
+            pd.DataFrame(diag["by_difficulty"]).rename(
+                columns={"label":"Dificultad","score":"Resultado (%)","n":"Preguntas"}
+            ),
+            use_container_width=True, hide_index=True
         )
-        st.dataframe(diff_df, use_container_width=True, hide_index=True)
-
-    st.markdown("### Desempeño por curso")
-    if diag["by_course"]:
-        course_df = pd.DataFrame(diag["by_course"]).rename(
-            columns={
-                "label": "Curso",
-                "score": "Resultado (%)",
-                "n": "Preguntas",
-            }
-        )
-        st.dataframe(course_df, use_container_width=True, hide_index=True)
 
 
 def progress_view(user):
@@ -1085,10 +987,48 @@ def management_view(user):
     )
 
 
+def _build_answer_config(question_type, option_lines="", correct_option="", numeric_value=0.0, tolerance=0.0, unit=""):
+    if question_type == "Opción múltiple":
+        options = [x.strip() for x in (option_lines or "").splitlines() if x.strip()]
+        return {"options": options, "correct_option": (correct_option or "").strip()}
+    if question_type == "Respuesta numérica":
+        return {
+            "correct_value": float(numeric_value),
+            "tolerance": abs(float(tolerance)),
+            "unit": (unit or "").strip(),
+        }
+    return {}
+
+
+def _parse_rubric_lines(text):
+    rows = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            criterion, weight = line.rsplit("|", 1)
+            try:
+                w = float(weight.strip())
+            except Exception:
+                w = 1.0
+            rows.append({"criterion": criterion.strip(), "weight": w})
+        else:
+            rows.append({"criterion": line, "weight": 1.0})
+    return rows
+
+
+def _rubric_to_text(rubric):
+    return "\n".join(
+        f"{x.get('criterion','')} | {x.get('weight',1)}"
+        for x in (rubric or [])
+    )
+
+
 def question_bank_view(user):
     page_header(
         "Banco de preguntas EGP",
-        "Creación, clasificación, revisión y publicación de preguntas",
+        "Preguntas autocalificables, abiertas y evaluadas con rúbrica",
     )
 
     if user["role"] not in ("docente", "coordinador", "administrador"):
@@ -1097,8 +1037,7 @@ def question_bank_view(user):
 
     courses = get_all_courses()
     areas = get_all_areas()
-    questions = get_all_questions(include_drafts=True)
-
+    questions = get_all_questions_v16(include_drafts=True)
     course_map = {c["code"]: c for c in courses}
     area_map = {a["id"]: a["name"] for a in areas}
 
@@ -1107,15 +1046,15 @@ def question_bank_view(user):
         metric_card("Total", len(questions), "Preguntas registradas")
     with c2:
         metric_card(
-            "Borradores",
-            sum(1 for q in questions if q["status"] == "borrador"),
-            "En elaboración",
+            "Autocalificables",
+            sum(1 for q in questions if q.get("evaluation_mode") == "autocalificable"),
+            "Corrección automática",
         )
     with c3:
         metric_card(
-            "En revisión",
-            sum(1 for q in questions if q["status"] == "en_revision"),
-            "Pendientes",
+            "Con rúbrica",
+            sum(1 for q in questions if q.get("evaluation_mode") == "rubrica"),
+            "Revisión académica",
         )
     with c4:
         metric_card(
@@ -1124,221 +1063,203 @@ def question_bank_view(user):
             "Disponibles al estudiante",
         )
 
-    tabs = st.tabs([
-        "Explorar banco",
-        "Crear pregunta",
-        "Editar / flujo editorial",
-    ])
+    tabs = st.tabs(["Explorar banco", "Crear pregunta", "Editar / flujo editorial"])
 
     with tabs[0]:
         if not questions:
             st.info("El banco todavía está vacío.")
         else:
             f1, f2, f3, f4 = st.columns(4)
-
             with f1:
                 career_filter = st.selectbox(
                     "Carrera",
                     ["Todas", "IE", "IEL", "IME"],
-                    format_func=lambda x: (
-                        "Todas" if x == "Todas"
-                        else f"{x} · {CAREER_LABELS[x]}"
-                    ),
+                    format_func=lambda x: "Todas" if x == "Todas" else f"{x} · {CAREER_LABELS[x]}",
                     key="qb_filter_career",
                 )
-
             with f2:
-                area_names = ["Todas"] + sorted(set(area_map.values()))
                 area_filter = st.selectbox(
                     "Área EGP",
-                    area_names,
+                    ["Todas"] + sorted(set(area_map.values())),
                     key="qb_filter_area",
                 )
-
             with f3:
+                mode_filter = st.selectbox(
+                    "Evaluación",
+                    ["Todas"] + list(EVALUATION_MODES.keys()),
+                    format_func=lambda x: "Todas" if x == "Todas" else EVALUATION_MODES[x],
+                    key="qb_filter_mode",
+                )
+            with f4:
                 status_filter = st.selectbox(
                     "Estado",
                     ["Todos"] + list(STATUS_LABELS.keys()),
-                    format_func=lambda x: (
-                        "Todos" if x == "Todos"
-                        else STATUS_LABELS[x]
-                    ),
+                    format_func=lambda x: "Todos" if x == "Todos" else STATUS_LABELS[x],
                     key="qb_filter_status",
-                )
-
-            with f4:
-                difficulty_filter = st.selectbox(
-                    "Dificultad",
-                    ["Todas", 1, 2, 3, 4, 5],
-                    key="qb_filter_diff",
                 )
 
             rows = []
             filtered = []
-
             for q in questions:
-                c = course_map.get(q.get("course_code"), {})
-                qarea = area_map.get(q.get("area_id"), c.get("area", "Sin área"))
+                course = course_map.get(q.get("course_code"), {})
+                qarea = area_map.get(q.get("area_id"), course.get("area", "Sin área"))
                 careers = q.get("careers", [])
 
                 if career_filter != "Todas" and career_filter not in careers:
                     continue
                 if area_filter != "Todas" and qarea != area_filter:
                     continue
-                if status_filter != "Todos" and q["status"] != status_filter:
+                if mode_filter != "Todas" and q.get("evaluation_mode") != mode_filter:
                     continue
-                if difficulty_filter != "Todas" and q.get("difficulty") != difficulty_filter:
+                if status_filter != "Todos" and q["status"] != status_filter:
                     continue
 
                 filtered.append(q)
                 rows.append({
                     "Curso": q.get("course_code"),
-                    "Área EGP": qarea,
                     "Carreras": ", ".join(careers),
                     "Tipo": q.get("question_type"),
-                    "Competencia": q.get("competency"),
+                    "Evaluación": EVALUATION_MODES.get(q.get("evaluation_mode"), q.get("evaluation_mode")),
                     "Dificultad": q.get("difficulty"),
+                    "Peso": q.get("weight"),
                     "Estado": STATUS_LABELS.get(q["status"], q["status"]),
-                    "Pregunta": q["question_text"][:140],
+                    "Pregunta": q["question_text"][:120],
                 })
 
             st.caption(f"{len(filtered)} preguntas encontradas")
-
             if rows:
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            for q in filtered[:30]:
-                c = course_map.get(q.get("course_code"), {})
-                with st.expander(
-                    f"{q.get('course_code','')} · {c.get('name','')} · "
-                    f"{STATUS_LABELS.get(q['status'],q['status'])}"
-                ):
-                    st.markdown("**Pregunta**")
-                    st.write(q["question_text"])
-                    st.markdown("**Respuesta esperada / criterio**")
-                    st.write(
-                        q.get("expected_answer")
-                        or "Sin respuesta esperada registrada."
-                    )
-                    st.caption(
-                        f"Carreras: {', '.join(q.get('careers', []))} · "
-                        f"Dificultad: {q.get('difficulty','—')}/5 · "
-                        f"Competencia: {q.get('competency','—')} · "
-                        f"Tipo: {q.get('question_type','—')}"
-                    )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     with tabs[1]:
-        st.markdown("### Nueva pregunta")
-
-        course_labels = {
-            f"{c['code']} · {c['name']}": c
-            for c in courses
-        }
-
-        if not course_labels:
+        if not courses:
             st.warning("No hay cursos disponibles.")
         else:
-            course_label = st.selectbox(
-                "Curso",
-                list(course_labels.keys()),
-                key="newq_course",
-            )
+            course_labels = {f"{c['code']} · {c['name']}": c for c in courses}
+            course_label = st.selectbox("Curso", list(course_labels.keys()), key="newq_course_v16")
             course = course_labels[course_label]
-
-            course_area = next(
-                (a for a in areas if a["id"] == course.get("area_id")),
-                None,
-            )
-            default_area_id = course_area["id"] if course_area else None
-
             linked_careers = get_course_careers(course["code"])
-            topics = get_topics_for_course(
-                course["code"],
-                include_drafts=True,
-            )
+            topics = get_topics_for_course(course["code"], include_drafts=True)
 
             topic_labels = {"Sin tema específico": None}
             for t in topics:
-                topic_labels[
-                    f"{t.get('sort_order',0)} · {t['title']} "
-                    f"[{STATUS_LABELS.get(t['status'],t['status'])}]"
-                ] = t["id"]
+                topic_labels[f"{t.get('sort_order',0)} · {t['title']}"] = t["id"]
 
-            with st.form("create_question_form"):
-                st.caption(
-                    f"Área EGP: {course.get('area','Sin área')} · "
-                    f"Carreras vinculadas al curso: "
-                    f"{', '.join(linked_careers) or 'Ninguna'}"
-                )
+            question_type = st.selectbox("Tipo de pregunta", STRUCTURED_QUESTION_TYPES, key="newq_type_v16")
 
-                topic_label = st.selectbox(
-                    "Unidad / tema",
-                    list(topic_labels.keys()),
-                )
-                question_text = st.text_area(
-                    "Enunciado de la pregunta",
-                    height=180,
-                    placeholder=(
-                        "Formule una pregunta que evalúe comprensión, "
-                        "cálculo, análisis o defensa técnica."
-                    ),
-                )
-                expected_answer = st.text_area(
-                    "Respuesta esperada / criterio de evaluación",
-                    height=180,
-                    placeholder=(
-                        "Incluya los elementos mínimos que debería "
-                        "contener una respuesta técnicamente correcta."
-                    ),
+            default_mode = (
+                "autocalificable"
+                if question_type in ("Opción múltiple", "Respuesta numérica")
+                else ("rubrica" if question_type in ("Análisis de caso", "Diseño / selección", "Defensa oral") else "autoevaluacion")
+            )
+            allowed_modes = (
+                ["autocalificable"]
+                if question_type in ("Opción múltiple", "Respuesta numérica")
+                else ["autoevaluacion", "rubrica"]
+            )
+            mode = st.selectbox(
+                "Modalidad de evaluación",
+                allowed_modes,
+                index=allowed_modes.index(default_mode) if default_mode in allowed_modes else 0,
+                format_func=lambda x: EVALUATION_MODES[x],
+                key="newq_mode_v16",
+            )
+
+            with st.form("create_question_form_v16"):
+                topic_label = st.selectbox("Unidad / tema", list(topic_labels.keys()))
+                qtext = st.text_area("Enunciado de la pregunta", height=170)
+                expected = st.text_area(
+                    "Respuesta esperada / criterio general",
+                    height=150,
+                    help="Para preguntas autocalificables sirve como explicación posterior; para abiertas define el criterio técnico esperado.",
                 )
 
-                q1, q2, q3 = st.columns(3)
-                with q1:
-                    difficulty = st.select_slider(
-                        "Dificultad",
-                        options=[1, 2, 3, 4, 5],
-                        value=3,
+                option_lines = ""
+                correct_option = ""
+                numeric_value = 0.0
+                tolerance = 0.0
+                unit = ""
+                rubric_text = ""
+
+                if question_type == "Opción múltiple":
+                    option_lines = st.text_area(
+                        "Opciones — una por línea",
+                        height=120,
+                        placeholder="Opción A\nOpción B\nOpción C\nOpción D",
                     )
-                with q2:
-                    competency = st.selectbox(
-                        "Competencia",
-                        COMPETENCIES,
-                    )
-                with q3:
-                    question_type = st.selectbox(
-                        "Tipo",
-                        QUESTION_TYPES,
+                    correct_option = st.text_input(
+                        "Respuesta correcta",
+                        help="Debe coincidir exactamente con una de las opciones.",
                     )
 
-                careers = st.multiselect(
-                    "Carreras donde aplica",
-                    options=["IE", "IEL", "IME"],
-                    default=linked_careers,
-                    format_func=lambda x: f"{x} · {CAREER_LABELS[x]}",
-                )
+                elif question_type == "Respuesta numérica":
+                    n1, n2, n3 = st.columns(3)
+                    with n1:
+                        numeric_value = st.number_input("Valor correcto", value=0.0, format="%.8f")
+                    with n2:
+                        tolerance = st.number_input("Tolerancia absoluta ±", min_value=0.0, value=0.01, format="%.8f")
+                    with n3:
+                        unit = st.text_input("Unidad", placeholder="V, A, Ω, kW...")
 
-                create = st.form_submit_button(
-                    "Crear como borrador",
-                    type="primary",
-                    use_container_width=True,
-                )
+                if mode == "rubrica":
+                    rubric_text = st.text_area(
+                        "Rúbrica",
+                        height=140,
+                        placeholder=(
+                            "Identifica correctamente el principio físico | 30\n"
+                            "Desarrolla el procedimiento técnico | 40\n"
+                            "Justifica la conclusión | 30"
+                        ),
+                        help="Formato: criterio | peso. Los pesos son relativos.",
+                    )
 
+                r1, r2, r3, r4 = st.columns(4)
+                with r1:
+                    difficulty = st.select_slider("Dificultad", options=[1,2,3,4,5], value=3)
+                with r2:
+                    competency = st.selectbox("Competencia", COMPETENCIES)
+                with r3:
+                    weight = st.number_input("Peso", min_value=0.1, value=1.0, step=0.1)
+                with r4:
+                    careers = st.multiselect(
+                        "Carreras",
+                        ["IE","IEL","IME"],
+                        default=linked_careers,
+                        format_func=lambda x: f"{x} · {CAREER_LABELS[x]}",
+                    )
+
+                create = st.form_submit_button("Crear como borrador", type="primary", use_container_width=True)
                 if create:
-                    ok, msg, qid = create_question(
-                        area_id=default_area_id,
+                    cfg = _build_answer_config(
+                        question_type, option_lines, correct_option,
+                        numeric_value, tolerance, unit
+                    )
+
+                    if question_type == "Opción múltiple":
+                        options = cfg.get("options", [])
+                        if len(options) < 2:
+                            st.error("La opción múltiple necesita al menos dos opciones.")
+                            st.stop()
+                        if cfg.get("correct_option") not in options:
+                            st.error("La respuesta correcta debe coincidir exactamente con una opción.")
+                            st.stop()
+
+                    rubric = _parse_rubric_lines(rubric_text) if mode == "rubrica" else []
+
+                    ok, msg, _ = create_question_v16(
+                        area_id=course.get("area_id"),
                         course_code=course["code"],
                         topic_id=topic_labels[topic_label],
-                        question_text=question_text,
-                        expected_answer=expected_answer,
+                        question_text=qtext,
+                        expected_answer=expected,
                         difficulty=difficulty,
                         competency=competency,
                         question_type=question_type,
                         career_codes=careers,
                         created_by=user["id"],
+                        evaluation_mode=mode,
+                        answer_config=cfg,
+                        rubric=rubric,
+                        weight=weight,
                     )
                     _flash(ok, msg)
                     if ok:
@@ -1350,173 +1271,44 @@ def question_bank_view(user):
         else:
             labels = {}
             for q in questions:
-                c = course_map.get(q.get("course_code"), {})
-                preview = q["question_text"].replace("\n", " ")[:85]
+                preview = q["question_text"].replace("\n", " ")[:75]
                 labels[
                     f"{q.get('course_code','')} · "
-                    f"{STATUS_LABELS.get(q['status'],q['status'])} · "
-                    f"{preview}"
+                    f"{STATUS_LABELS.get(q['status'],q['status'])} · {preview}"
                 ] = q
 
-            label = st.selectbox(
-                "Seleccionar pregunta",
-                list(labels.keys()),
-                key="edit_question_selector",
-            )
-            q = labels[label]
+            selected_label = st.selectbox("Seleccionar pregunta", list(labels.keys()), key="edit_q_v16")
+            q = labels[selected_label]
             course = course_map.get(q.get("course_code"), {})
 
-            st.markdown(
-                f"### {q.get('course_code','')} · "
-                f"{course.get('name','Pregunta EGP')}"
+            st.markdown(f"### {q.get('course_code','')} · {course.get('name','')}")
+            st.caption(
+                f"Evaluación: {EVALUATION_MODES.get(q.get('evaluation_mode'),'—')} · "
+                f"Estado: {STATUS_LABELS.get(q['status'],q['status'])}"
             )
 
-            course_labels = {
-                f"{c['code']} · {c['name']}": c
-                for c in courses
-            }
-            current_course_label = next(
-                (
-                    lbl for lbl, c in course_labels.items()
-                    if c["code"] == q.get("course_code")
-                ),
-                list(course_labels.keys())[0],
-            )
+            st.markdown("**Enunciado actual**")
+            st.write(q.get("question_text"))
+            st.markdown("**Respuesta esperada**")
+            st.write(q.get("expected_answer") or "—")
 
-            selected_course_label = st.selectbox(
-                "Curso",
-                list(course_labels.keys()),
-                index=list(course_labels.keys()).index(current_course_label),
-                key=f"edit_course_{q['id']}",
-            )
-            selected_course = course_labels[selected_course_label]
-
-            topics = get_topics_for_course(
-                selected_course["code"],
-                include_drafts=True,
-            )
-            topic_labels = {"Sin tema específico": None}
-            for t in topics:
-                topic_labels[
-                    f"{t.get('sort_order',0)} · {t['title']}"
-                ] = t["id"]
-
-            current_topic_label = next(
-                (
-                    lbl for lbl, tid in topic_labels.items()
-                    if tid == q.get("topic_id")
-                ),
-                "Sin tema específico",
-            )
-
-            area_id = selected_course.get("area_id")
-            recommended_careers = get_course_careers(
-                selected_course["code"]
-            )
-
-            with st.form(f"edit_question_form_{q['id']}"):
-                topic_label = st.selectbox(
-                    "Unidad / tema",
-                    list(topic_labels.keys()),
-                    index=list(topic_labels.keys()).index(current_topic_label),
+            cfg = q.get("answer_config") or {}
+            if q.get("question_type") == "Opción múltiple":
+                st.write("Opciones:", cfg.get("options", []))
+                st.caption(f"Correcta: {cfg.get('correct_option','—')}")
+            elif q.get("question_type") == "Respuesta numérica":
+                st.caption(
+                    f"Valor: {cfg.get('correct_value','—')} · "
+                    f"Tolerancia: ±{cfg.get('tolerance','—')} · "
+                    f"Unidad: {cfg.get('unit','')}"
                 )
 
-                question_text = st.text_area(
-                    "Enunciado",
-                    value=q.get("question_text") or "",
-                    height=180,
-                )
-                expected_answer = st.text_area(
-                    "Respuesta esperada / criterio",
-                    value=q.get("expected_answer") or "",
-                    height=180,
-                )
-
-                e1, e2, e3 = st.columns(3)
-                with e1:
-                    difficulty = st.select_slider(
-                        "Dificultad",
-                        options=[1, 2, 3, 4, 5],
-                        value=int(q.get("difficulty") or 3),
-                    )
-                with e2:
-                    current_comp = (
-                        q.get("competency")
-                        if q.get("competency") in COMPETENCIES
-                        else COMPETENCIES[0]
-                    )
-                    competency = st.selectbox(
-                        "Competencia",
-                        COMPETENCIES,
-                        index=COMPETENCIES.index(current_comp),
-                    )
-                with e3:
-                    current_type = (
-                        q.get("question_type")
-                        if q.get("question_type") in QUESTION_TYPES
-                        else QUESTION_TYPES[0]
-                    )
-                    question_type = st.selectbox(
-                        "Tipo",
-                        QUESTION_TYPES,
-                        index=QUESTION_TYPES.index(current_type),
-                    )
-
-                careers = st.multiselect(
-                    "Carreras donde aplica",
-                    options=["IE", "IEL", "IME"],
-                    default=q.get("careers") or recommended_careers,
-                    format_func=lambda x: f"{x} · {CAREER_LABELS[x]}",
-                )
-
-                allowed_status = (
-                    ["borrador", "en_revision"]
-                    if user["role"] == "docente"
-                    else list(STATUS_LABELS.keys())
-                )
-                current_status = q["status"]
-                if current_status not in allowed_status:
-                    allowed_status = [current_status] + [
-                        x for x in allowed_status
-                        if x != current_status
-                    ]
-
-                status = st.selectbox(
-                    "Estado",
-                    allowed_status,
-                    index=allowed_status.index(current_status),
-                    format_func=lambda x: STATUS_LABELS[x],
-                )
-
-                save = st.form_submit_button(
-                    "Guardar cambios",
-                    type="primary",
-                )
-
-                if save:
-                    ok, msg = update_question(
-                        question_id=q["id"],
-                        area_id=area_id,
-                        course_code=selected_course["code"],
-                        topic_id=topic_labels[topic_label],
-                        question_text=question_text,
-                        expected_answer=expected_answer,
-                        difficulty=difficulty,
-                        competency=competency,
-                        question_type=question_type,
-                        status=status,
-                        career_codes=careers,
-                    )
-                    _flash(ok, msg)
-                    if ok:
-                        st.rerun()
+            if q.get("rubric"):
+                st.markdown("**Rúbrica**")
+                st.dataframe(pd.DataFrame(q["rubric"]), use_container_width=True, hide_index=True)
 
             st.markdown("#### Flujo editorial")
-            transitions = _allowed_transitions(
-                user["role"],
-                q["status"],
-            )
-
+            transitions = _allowed_transitions(user["role"], q["status"])
             if transitions:
                 cols = st.columns(len(transitions))
                 for col, target in zip(cols, transitions):
@@ -1524,31 +1316,28 @@ def question_bank_view(user):
                         if st.button(
                             f"→ {STATUS_LABELS[target]}",
                             use_container_width=True,
-                            key=f"qstatus_{q['id']}_{target}",
+                            key=f"qstatus_v16_{q['id']}_{target}",
                         ):
-                            ok, msg = update_question_status(
-                                q["id"],
-                                target,
-                            )
+                            ok, msg = update_question_status(q["id"], target)
                             _flash(ok, msg)
                             if ok:
                                 st.rerun()
-            else:
-                st.caption(
-                    "No hay transiciones editoriales disponibles "
-                    "desde el estado actual para tu rol."
-                )
+
+            st.info(
+                "Para mantener la integridad de preguntas ya utilizadas en intentos, "
+                "v1.6 prioriza el flujo editorial. Si necesitas cambiar sustancialmente "
+                "una pregunta publicada, crea una nueva versión como borrador."
+            )
 
             if user["role"] == "administrador":
-                st.markdown("---")
                 confirm = st.checkbox(
                     "Confirmo que deseo habilitar la eliminación",
-                    key=f"confirm_delete_q_{q['id']}",
+                    key=f"confirm_delete_q_v16_{q['id']}",
                 )
                 if st.button(
                     "Eliminar pregunta",
                     disabled=not confirm,
-                    key=f"delete_q_{q['id']}",
+                    key=f"delete_q_v16_{q['id']}",
                 ):
                     ok, msg = delete_question(q["id"])
                     _flash(ok, msg)
@@ -1556,11 +1345,113 @@ def question_bank_view(user):
                         st.rerun()
 
     st.caption(
-        "Modelo recomendado: cada pregunta debe estar vinculada a curso, "
-        "tema cuando corresponda, carrera(s), dificultad, competencia y "
-        "respuesta esperada."
+        "v1.6 distingue calificación automática, autoevaluación guiada "
+        "y revisión académica mediante rúbrica."
     )
 
+
+def review_answers_view(user):
+    page_header(
+        "Revisión de respuestas",
+        "Calificación docente de respuestas abiertas y preguntas con rúbrica",
+    )
+
+    if user["role"] not in ("docente", "coordinador", "administrador"):
+        st.warning("No tienes permisos para revisar respuestas.")
+        return
+
+    attempts = get_staff_attempts(limit=100)
+    if not attempts:
+        st.info("Todavía no hay simulacros finalizados.")
+        return
+
+    profiles = get_profiles_by_ids([a["student_id"] for a in attempts])
+
+    pending_attempts = []
+    for a in attempts:
+        answers = get_attempt_answers_v16(a["id"])
+        pending = [
+            x for x in answers
+            if x.get("evaluation_mode") == "rubrica"
+            and x.get("evaluation_status") != "revisado"
+        ]
+        if pending:
+            pending_attempts.append((a, pending))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        metric_card("Intentos pendientes", len(pending_attempts), "Con respuestas por revisar")
+    with c2:
+        metric_card(
+            "Respuestas pendientes",
+            sum(len(x[1]) for x in pending_attempts),
+            "Con rúbrica",
+        )
+
+    if not pending_attempts:
+        st.success("No hay respuestas pendientes de revisión.")
+        return
+
+    labels = {}
+    for a, pending in pending_attempts:
+        p = profiles.get(a["student_id"], {})
+        labels[
+            f"{p.get('full_name','Estudiante')} · "
+            f"{a.get('career_code','')} · "
+            f"{(a.get('started_at') or '')[:10]} · "
+            f"{len(pending)} pendiente(s)"
+        ] = (a, pending)
+
+    selected_label = st.selectbox("Seleccionar intento", list(labels.keys()))
+    attempt, pending = labels[selected_label]
+    profile = profiles.get(attempt["student_id"], {})
+
+    st.markdown(f"### {profile.get('full_name','Estudiante')}")
+    st.caption(
+        f"Carné/ID: {profile.get('student_id') or '—'} · "
+        f"Carrera: {attempt.get('career_code','—')}"
+    )
+
+    for i, a in enumerate(pending, 1):
+        with st.expander(
+            f"{i}. {a.get('course_code','')} · {a.get('course_name','')}",
+            expanded=i == 1,
+        ):
+            st.markdown("**Pregunta**")
+            st.write(a.get("question_text") or "")
+            st.markdown("**Respuesta del estudiante**")
+            st.write(a.get("answer_text") or "Sin respuesta.")
+
+            st.markdown("**Respuesta esperada / criterio general**")
+            st.info(a.get("expected_answer") or "Sin criterio general.")
+
+            rubric = a.get("rubric") or []
+            if rubric:
+                st.markdown("**Rúbrica registrada**")
+                st.dataframe(pd.DataFrame(rubric), use_container_width=True, hide_index=True)
+
+            score = st.slider(
+                "Calificación",
+                0, 100,
+                value=int(round(float(a.get("review_score") or 0))),
+                step=5,
+                key=f"review_score_{a['id']}",
+            )
+            feedback = st.text_area(
+                "Retroalimentación docente",
+                value=a.get("feedback") or "",
+                height=120,
+                key=f"review_feedback_{a['id']}",
+            )
+
+            if st.button("Guardar revisión", type="primary", key=f"review_save_{a['id']}"):
+                ok, msg = review_answer_with_rubric(
+                    a["id"], score, feedback, user["id"]
+                )
+                _flash(ok, msg)
+                if ok:
+                    recompute_attempt_score_v16(attempt["id"])
+                    st.rerun()
 
 def users_view(user):
     page_header("Usuarios y cohortes", "Administración de acceso")
@@ -1629,6 +1520,8 @@ elif section == "Gestión académica":
     management_view(user)
 elif section == "Banco de preguntas":
     question_bank_view(user)
+elif section == "Revisión de respuestas":
+    review_answers_view(user)
 elif section == "Usuarios y cohortes":
     users_view(user)
 elif section == "Analítica":
