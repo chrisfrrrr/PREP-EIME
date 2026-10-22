@@ -1319,3 +1319,27 @@ def get_profiles_by_ids(ids):
         .execute().data or []
     )
     return {r["id"]: r for r in rows}
+
+# v1.7
+from datetime import datetime, timezone
+
+def get_quality_reviews():
+    c=_client()
+    if not c: return {}
+    return {r['question_id']:r for r in (c.table('question_quality_reviews').select('*').execute().data or [])}
+
+def save_quality_review(question_id, reviewer_id, checks, notes):
+    c=_client()
+    if not c: return False,'Sin sesión.'
+    payload={'question_id':question_id,'reviewer_id':reviewer_id,'reviewed_at':datetime.now(timezone.utc).isoformat(),'notes':notes}
+    for k in ('clarity','topic_alignment','technical_accuracy','answer_quality','evaluation_quality'):
+        payload[k]=bool(checks.get(k))
+    try:
+        c.table('question_quality_reviews').upsert(payload,on_conflict='question_id').execute()
+        return True,'Revisión registrada.'
+    except Exception as e: return False,str(e)
+
+def bulk_transition_questions(ids,target):
+    c=_client()
+    if not c or not ids: return []
+    return c.rpc('bulk_transition_reviewed_questions',{'p_question_ids':ids[:100],'p_target':target}).execute().data or []

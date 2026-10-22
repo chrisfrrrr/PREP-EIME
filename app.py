@@ -16,6 +16,7 @@ from modules.data import (
     get_student_attempts, get_attempt_diagnostics,
     EVALUATION_MODES, STRUCTURED_QUESTION_TYPES,
     get_all_questions_v16, create_question_v16, update_question_v16,
+    get_quality_reviews, save_quality_review, bulk_transition_questions,
     build_simulator_question_set_v16, get_attempt_answers_v16,
     finalize_autograded_answers, save_self_evaluation_v16,
     recompute_attempt_score_v16, get_attempt_diagnostics_v16,
@@ -94,11 +95,12 @@ def sidebar(user):
     ]
 
     if user["role"] == "docente":
-        common += ["Gestión académica", "Banco de preguntas", "Revisión de respuestas"]
+        common += ["Gestión académica", "Banco de preguntas", "Control de calidad", "Revisión de respuestas"]
     elif user["role"] in ("coordinador", "administrador"):
         common += [
             "Gestión académica",
             "Banco de preguntas",
+            "Control de calidad",
             "Revisión de respuestas",
             "Usuarios y cohortes",
             "Analítica",
@@ -109,7 +111,7 @@ def sidebar(user):
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("PREP-EIME v1.6 · Evaluación estructurada")
+    st.sidebar.caption("PREP-EIME v1.7 · Control de calidad")
     if st.sidebar.button("Cerrar sesión"):
         logout()
 
@@ -1350,6 +1352,85 @@ def question_bank_view(user):
     )
 
 
+
+def quality_management_view(user):
+    page_header('Control de calidad EGP','Revisión académica y publicación masiva controlada')
+    if user['role'] not in ('docente','coordinador','administrador'):
+        st.error('Acceso restringido.'); return
+    try:
+        questions=get_all_questions_v16(include_drafts=True)
+        reviews=get_quality_reviews()
+        courses=get_all_courses()
+    except Exception as exc:
+        st.error(f'No se pudo leer la información. Ejecuta la migración v1.7: {exc}'); return
+    course_names={c['code']:c['name'] for c in courses}
+    m1,m2,m3=st.columns(3)
+    m1.metric('Preguntas',len(questions))
+    m2.metric('Revisadas',sum(bool(x.get('approved_for_publication')) for x in reviews.values()))
+    m3.metric('Pendientes',sum(not reviews.get(q['id'],{}).get('approved_for_publication',False) for q in questions))
+    c1,c2,c3=st.columns(3)
+    with c1:
+        course=st.selectbox('Curso',['Todos']+sorted({q['course_code'] for q in questions if q.get('course_code')}),format_func=lambda x:'Todos' if x=='Todos' else f'{x} · {course_names.get(x,x)}')
+    with c2:
+        status=st.selectbox('Estado',['Todos']+list(STATUS_LABELS),format_func=lambda x:'Todos' if x=='Todos' else STATUS_LABELS[x])
+    with c3:
+        quality=st.selectbox('Calidad',['Todas','Pendientes','Aprobadas'])
+    filtered=[]
+    for q in questions:
+        approved=bool(reviews.get(q['id'],{}).get('approved_for_publication'))
+        if course!='Todos' and q['course_code']!=course: continue
+        if status!='Todos' and q['status']!=status: continue
+        if quality=='Pendientes' and approved: continue
+        if quality=='Aprobadas' and not approved: continue
+        filtered.append(q)
+    st.caption(f'{len(filtered)} preguntas encontradas')
+    if not filtered: return
+    t1,t2,t3=st.tabs(['Revisión individual','Transiciones masivas','Cobertura'])
+    with t1:
+        labels={f'{i+1}. {q.get("course_code")} · {q["question_text"][:80]}':q for i,q in enumerate(filtered)}
+        selected=st.selectbox('Pregunta',list(labels)); q=labels[selected]
+        st.markdown('**Pregunta**'); st.write(q['question_text'])
+        st.markdown('**Respuesta esperada**'); st.write(q.get('expected_answer') or 'No registrada')
+        st.caption(f'Unidad: {q.get("topic_id") or "No asignada"} · {q.get("question_type")} · Dificultad {q.get("difficulty")}')
+        if q.get('rubric'): st.dataframe(pd.DataFrame(q['rubric']),hide_index=True)
+        if q.get('answer_config'): st.json(q['answer_config'])
+        old=reviews.get(q['id'],{})
+        criteria=[('clarity','Enunciado claro'),('topic_alignment','Correspondencia con la unidad'),('technical_accuracy','Exactitud técnica'),('answer_quality','Respuesta correcta y suficiente'),('evaluation_quality','Rúbrica y modalidad apropiadas')]
+        with st.form('quality_review_form'):
+            checks={k:st.checkbox(label,value=bool(old.get(k,False))) for k,label in criteria}
+            notes=st.text_area('Observaciones',value=old.get('notes') or '')
+            if st.form_submit_button('Guardar revisión',type='primary'):
+                ok,msg=save_quality_review(q['id'],user['id'],checks,notes)
+                if ok: st.success(msg); st.rerun()
+                else: st.error(msg)
+    with t2:
+        if user['role'] not in ('coordinador','administrador'):
+            st.info('Las transiciones masivas requieren coordinación o administración.')
+        else:
+            approved=[q for q in filtered if reviews.get(q['id'],{}).get('approved_for_publication')]
+            names={q['id']:f'{q["course_code"]} · {q["question_text"][:70]} · {q["status"]}' for q in approved}
+            selected_ids=st.multiselect('Preguntas revisadas (máximo 100)',list(names),format_func=lambda x:names[x],max_selections=100)
+            target=st.selectbox('Estado siguiente',['en_revision','aprobado','publicado'],format_func=lambda x:STATUS_LABELS[x])
+            st.caption('Transiciones permitidas: borrador → en revisión → aprobado → publicado.')
+            confirm=st.checkbox('Confirmo que revisé las preguntas seleccionadas')
+            if st.button('Aplicar transición',type='primary',disabled=not selected_ids or not confirm):
+                try:
+                    result=bulk_transition_questions(selected_ids,target)
+                    st.dataframe(pd.DataFrame(result),hide_index=True,use_container_width=True)
+                    st.success(f'Actualizadas: {sum(r.get("outcome","").startswith("Actualizada") for r in result)}')
+                except Exception as exc: st.error(str(exc))
+    with t3:
+        summary={}
+        for q in questions:
+            code=q.get('course_code') or 'Sin curso'
+            item=summary.setdefault(code,{'Código':code,'Curso':course_names.get(code,code),'Total':0,'Revisadas':0,'Publicadas':0})
+            item['Total']+=1
+            item['Revisadas']+=bool(reviews.get(q['id'],{}).get('approved_for_publication'))
+            item['Publicadas']+=q['status']=='publicado'
+        df=pd.DataFrame(sorted(summary.values(),key=lambda x:x['Código']))
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        st.download_button('Exportar CSV',df.to_csv(index=False).encode('utf-8-sig'),'cobertura_v1_7.csv','text/csv')
+
 def review_answers_view(user):
     page_header(
         "Revisión de respuestas",
@@ -1520,6 +1601,8 @@ elif section == "Gestión académica":
     management_view(user)
 elif section == "Banco de preguntas":
     question_bank_view(user)
+elif section == "Control de calidad":
+    quality_management_view(user)
 elif section == "Revisión de respuestas":
     review_answers_view(user)
 elif section == "Usuarios y cohortes":
