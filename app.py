@@ -223,8 +223,11 @@ def academic_view(user):
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     st.markdown("### Explorar contenido publicado")
-    opts = {f"{r['code']} · {r['name']}": r["code"] for r in courses}
-    sel = st.selectbox("Curso", list(opts.keys()))
+    # Mantener el explorador sincronizado con el filtro de área.
+    visible_codes = set(df["Código"].tolist())
+    filtered_courses = [r for r in courses if r["code"] in visible_codes]
+    opts = {f"{r['code']} · {r['name']}": r["code"] for r in filtered_courses}
+    sel = st.selectbox("Curso", list(opts.keys()), key=f"academic_course_{career}_{area}")
     code = opts[sel]
 
     programs = [
