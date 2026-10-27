@@ -726,12 +726,22 @@ def _diagnostic_panel_v16(attempt_id):
 
     st.markdown("### Diagnóstico")
     area_sorted = sorted(diag["by_area"], key=lambda x: x["score"], reverse=True)
-    if area_sorted:
-        c1,c2 = st.columns(2)
-        with c1:
-            metric_card("Fortaleza", area_sorted[0]["label"], f"{area_sorted[0]['score']:.1f}%")
-        with c2:
-            metric_card("Área prioritaria", area_sorted[-1]["label"], f"{area_sorted[-1]['score']:.1f}%")
+    if len(area_sorted) == 1:
+        area = area_sorted[0]
+        metric_card("Desempeño del área", area["label"],
+                    f"{area['score']:.1f}% · {area['n']} pregunta(s) evaluada(s)")
+        st.caption("El diagnóstico se basa únicamente en las respuestas evaluadas; no representa necesariamente todas las preguntas del simulacro.")
+    elif len(area_sorted) > 1:
+        best, worst = area_sorted[0], area_sorted[-1]
+        if abs(float(best["score"]) - float(worst["score"])) < 0.000001:
+            st.info(f"Las {len(area_sorted)} áreas evaluadas presentan el mismo desempeño ({best['score']:.1f}%). No se identifica una fortaleza o área prioritaria diferenciada.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                metric_card("Fortaleza", best["label"], f"{best['score']:.1f}%")
+            with c2:
+                metric_card("Área prioritaria", worst["label"], f"{worst['score']:.1f}%")
+        st.caption("El diagnóstico se basa únicamente en las respuestas evaluadas.")
 
     if diag["by_area"]:
         df = pd.DataFrame(diag["by_area"]).rename(
