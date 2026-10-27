@@ -329,6 +329,53 @@ def _attempt_elapsed_minutes(attempt):
         return 0
 
 
+
+def _attempt_history(user):
+    """Muestra los intentos del estudiante sin alterar sus resultados."""
+    if user.get("role") != "estudiante":
+        return
+
+    attempts = get_student_attempts(user.get("id")) or []
+    st.markdown("### Historial de simulacros")
+    if not attempts:
+        st.info("Aún no tienes simulacros registrados.")
+        return
+
+    rows = []
+    for attempt in attempts:
+        raw_score = attempt.get("score")
+        try:
+            score = f"{float(raw_score):.1f}%" if raw_score is not None else "Pendiente"
+        except (TypeError, ValueError):
+            score = "Pendiente"
+        rows.append({
+            "Fecha": (attempt.get("started_at") or "")[:16].replace("T", " "),
+            "Estado": attempt.get("status") or "—",
+            "Preguntas": attempt.get("question_count") or 0,
+            "Resultado": score,
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    finished = [a for a in attempts if a.get("status") == "finalizado"]
+    if finished:
+        labels = {
+            a["id"]: (
+                f"{(a.get('started_at') or '')[:16].replace('T', ' ')} · "
+                f"{a.get('question_count') or 0} preguntas · "
+                f"{a.get('score') if a.get('score') is not None else 'Pendiente'}"
+            )
+            for a in finished
+        }
+        selected_id = st.selectbox(
+            "Simulacro finalizado", list(labels),
+            format_func=lambda attempt_id: labels[attempt_id],
+            key="history_attempt_selection",
+        )
+        if st.button("Ver revisión del simulacro", key="open_attempt_history"):
+            st.session_state["review_attempt_id"] = selected_id
+            st.rerun()
+
+
 def simulator_view(user):
     page_header(
         "Simulador EGP",
