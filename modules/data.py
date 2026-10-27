@@ -569,8 +569,30 @@ def build_simulator_question_set(
         q["course_name"] = course.get("name") or q.get("course_code")
         filtered.append(q)
 
-    random.shuffle(filtered)
-    return filtered[: min(int(question_count), len(filtered))]
+    # Distribución equilibrada entre áreas con preguntas elegibles.
+    # En cada ronda se toma como máximo una pregunta por área; cuando
+    # alguna se agota, las restantes siguen cubriendo los cupos.
+    area_pools = {}
+    for row in filtered:
+        area_pools.setdefault(row["area"], []).append(row)
+    for pool in area_pools.values():
+        random.shuffle(pool)
+
+    areas = list(area_pools)
+    random.shuffle(areas)  # Desempate aleatorio si hay menos cupos que áreas.
+    limit = min(max(0, int(question_count)), len(filtered))
+    selected = []
+    while len(selected) < limit:
+        available = [area for area in areas if area_pools[area]]
+        if not available:
+            break
+        random.shuffle(available)  # Distribuye equitativamente los sobrantes.
+        for area in available:
+            if len(selected) >= limit:
+                break
+            selected.append(area_pools[area].pop())
+    random.shuffle(selected)  # No agrupar las preguntas por área al mostrarlas.
+    return selected
 
 
 def create_attempt(student_id, career_code, question_ids, duration_minutes=60):
@@ -1043,8 +1065,30 @@ def build_simulator_question_set_v16(
         row["course_name"] = course.get("name") or q.get("course_code")
         filtered.append(row)
 
-    random.shuffle(filtered)
-    return filtered[: min(int(question_count), len(filtered))]
+    # Distribución equilibrada entre áreas con preguntas elegibles.
+    # En cada ronda se toma como máximo una pregunta por área; cuando
+    # alguna se agota, las restantes siguen cubriendo los cupos.
+    area_pools = {}
+    for row in filtered:
+        area_pools.setdefault(row["area"], []).append(row)
+    for pool in area_pools.values():
+        random.shuffle(pool)
+
+    areas = list(area_pools)
+    random.shuffle(areas)  # Desempate aleatorio si hay menos cupos que áreas.
+    limit = min(max(0, int(question_count)), len(filtered))
+    selected = []
+    while len(selected) < limit:
+        available = [area for area in areas if area_pools[area]]
+        if not available:
+            break
+        random.shuffle(available)  # Distribuye equitativamente los sobrantes.
+        for area in available:
+            if len(selected) >= limit:
+                break
+            selected.append(area_pools[area].pop())
+    random.shuffle(selected)  # No agrupar las preguntas por área al mostrarlas.
+    return selected
 
 
 def get_attempt_answers_v16(attempt_id):

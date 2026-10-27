@@ -472,6 +472,7 @@ def simulator_view(user):
     selected_areas = st.multiselect(
         "Áreas incluidas", available_areas, default=available_areas
     )
+    st.caption("Las preguntas se distribuyen de forma equilibrada entre las áreas seleccionadas que tengan preguntas disponibles, según la dificultad elegida.")
 
     mode_counts = {}
     for q in published:
