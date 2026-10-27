@@ -17,6 +17,7 @@ from modules.data import (
     EVALUATION_MODES, STRUCTURED_QUESTION_TYPES,
     get_all_questions_v16, create_question_v16, update_question_v16,
     get_quality_reviews, save_quality_review, bulk_transition_questions,
+    get_published_questions_for_simulator_v16,
     build_simulator_question_set_v16, get_attempt_answers_v16,
     finalize_autograded_answers, save_self_evaluation_v16,
     recompute_attempt_score_v16, get_attempt_diagnostics_v16,
