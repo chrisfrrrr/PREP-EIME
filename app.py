@@ -108,7 +108,7 @@ def sidebar(user):
         ]
 
     section = st.sidebar.radio(
-        "Navegación", common, label_visibility="collapsed"
+        "Navegación", common, label_visibility="collapsed", key="main_navigation"
     )
 
     st.sidebar.markdown("---")
@@ -406,9 +406,16 @@ def _attempt_history(user):
             format_func=lambda attempt_id: labels[attempt_id],
             key="history_attempt_selection",
         )
-        if st.button("Ver revisión del simulacro", key="open_attempt_history"):
+        def open_selected_attempt():
+            # Button callbacks execute before Streamlit instantiates the sidebar radio.
             st.session_state["review_attempt_id"] = selected_id
-            st.rerun()
+            st.session_state["main_navigation"] = "Simulador EGP"
+
+        st.button(
+            "Ver revisión del simulacro",
+            key="open_attempt_history",
+            on_click=open_selected_attempt,
+        )
 
 
 def simulator_view(user):
