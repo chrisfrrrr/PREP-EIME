@@ -1353,6 +1353,59 @@ def question_bank_view(user):
 
 
 
+def _render_oral_evaluation_guide(config):
+    """Presenta la configuración pedagógica sin exponer JSON técnico."""
+    if not isinstance(config, dict) or not config:
+        return
+
+    st.markdown('#### Guía de evaluación oral')
+    info = []
+    if config.get('unit') is not None:
+        info.append(f"Unidad {config['unit']}")
+    if config.get('number') is not None:
+        info.append(f"Pregunta {config['number']}")
+    if config.get('modality'):
+        info.append(f"Modalidad: {config['modality']}")
+    if info:
+        st.caption(' · '.join(info))
+
+    if config.get('topic_block'):
+        st.markdown('**Bloque temático**')
+        st.write(str(config['topic_block']))
+    if config.get('board'):
+        st.markdown('**Desarrollo esperado en pizarrón**')
+        st.write(str(config['board']))
+    follow_up = config.get('follow_up')
+    if isinstance(follow_up, (list, tuple)) and follow_up:
+        st.markdown('**Preguntas complementarias**')
+        for i, question in enumerate(follow_up, 1):
+            st.write(f'{i}. {question}')
+    elif isinstance(follow_up, str) and follow_up.strip():
+        st.markdown('**Preguntas complementarias**')
+        st.write(follow_up)
+    if config.get('critical_error'):
+        st.markdown('**Error crítico que debe identificarse**')
+        st.warning(str(config['critical_error']))
+
+    # Configuraciones de preguntas estructuradas, si se utilizan en este módulo.
+    if isinstance(config.get('options'), list) and config['options']:
+        st.markdown('**Opciones de respuesta**')
+        for i, option in enumerate(config['options'], 1):
+            st.write(f'{i}. {option}')
+    for key, label in (
+        ('correct_option', 'Opción correcta'),
+        ('correct_value', 'Valor correcto'),
+        ('tolerance', 'Tolerancia'),
+        ('unit', 'Unidad de respuesta'),
+    ):
+        # unit numérico en bancos orales indica número de unidad temática.
+        if key == 'unit' and isinstance(config.get(key), (int, float)):
+            continue
+        value = config.get(key)
+        if value is not None and value != '':
+            st.markdown(f'**{label}:** {value}')
+
+
 def quality_management_view(user):
     page_header('Control de calidad EGP','Revisión académica y publicación masiva controlada')
     if user['role'] not in ('docente','coordinador','administrador'):
@@ -1393,12 +1446,20 @@ def quality_management_view(user):
         st.markdown('**Respuesta esperada**'); st.write(q.get('expected_answer') or 'No registrada')
         st.caption(f'Unidad: {q.get("topic_id") or "No asignada"} · {q.get("question_type")} · Dificultad {q.get("difficulty")}')
         if q.get('rubric'): st.dataframe(pd.DataFrame(q['rubric']),hide_index=True)
-        if q.get('answer_config'): st.json(q['answer_config'])
+        if q.get('answer_config'): _render_oral_evaluation_guide(q['answer_config'])
         old=reviews.get(q['id'],{})
         criteria=[('clarity','Enunciado claro'),('topic_alignment','Correspondencia con la unidad'),('technical_accuracy','Exactitud técnica'),('answer_quality','Respuesta correcta y suficiente'),('evaluation_quality','Rúbrica y modalidad apropiadas')]
+        st.markdown('#### Evaluación de calidad académica')
+        st.caption('Marque cada criterio únicamente después de verificarlo. Guardar la revisión no publica la pregunta.')
         with st.form('quality_review_form'):
             checks={k:st.checkbox(label,value=bool(old.get(k,False))) for k,label in criteria}
-            notes=st.text_area('Observaciones',value=old.get('notes') or '')
+            fulfilled=sum(checks.values())
+            st.progress(fulfilled / len(criteria), text=f'Criterios cumplidos: {fulfilled} de {len(criteria)}')
+            if fulfilled == len(criteria):
+                st.success('Los cinco criterios están marcados. La aprobación se determinará al guardar la revisión.')
+            else:
+                st.info('La pregunta conserva criterios pendientes de revisión.')
+            notes=st.text_area('Observaciones académicas',value=old.get('notes') or '',placeholder='Describa errores detectados, ajustes necesarios o justificación académica...')
             if st.form_submit_button('Guardar revisión',type='primary'):
                 ok,msg=save_quality_review(q['id'],user['id'],checks,notes)
                 if ok: st.success(msg); st.rerun()
