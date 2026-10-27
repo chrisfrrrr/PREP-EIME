@@ -271,7 +271,8 @@ def egp_view(user):
 
     courses = {c["code"]: c for c in get_courses_for_career(career)}
 
-    f1, f2, f3 = st.columns(3)
+    # Filtros dependientes: Área → Curso → Unidad temática → Dificultad.
+    f1, f2, f3, f4 = st.columns(4)
     with f1:
         area_options = ["Todas"] + sorted({
             courses.get(q.get("course_code"), {}).get("area", "Sin área")
@@ -279,7 +280,6 @@ def egp_view(user):
         })
         area_filter = st.selectbox("Área", area_options, key=f"egp_area_{career}")
 
-    # Las opciones de curso dependen del área seleccionada y de la carrera.
     area_questions = [
         q for q in questions
         if area_filter == "Todas"
@@ -289,25 +289,48 @@ def egp_view(user):
         course_options = ["Todos"] + sorted({
             q.get("course_code") for q in area_questions if q.get("course_code")
         })
-        # Clave por área: al cambiar de área, el curso anterior no queda seleccionado.
         course_filter = st.selectbox(
             "Curso", course_options, key=f"egp_course_{career}_{area_filter}"
         )
 
-    with f3:
-        difficulty_filter = st.selectbox("Dificultad", ["Todas", 1, 2, 3, 4, 5], key=f"egp_difficulty_{career}")
+    course_questions = [
+        q for q in area_questions
+        if course_filter == "Todos" or q.get("course_code") == course_filter
+    ]
 
-    filtered = []
-    for q in questions:
-        c = courses.get(q.get("course_code"), {})
-        qarea = c.get("area", "Sin área")
-        if area_filter != "Todas" and qarea != area_filter:
-            continue
-        if course_filter != "Todos" and q.get("course_code") != course_filter:
-            continue
-        if difficulty_filter != "Todas" and q.get("difficulty") != difficulty_filter:
-            continue
-        filtered.append(q)
+    # Mostrar solo unidades publicadas que realmente tengan preguntas publicadas
+    # del curso seleccionado; no se mezclan unidades de distintos cursos.
+    topic_labels = {}
+    with f3:
+        if course_filter != "Todos":
+            linked_ids = {str(q["topic_id"]) for q in course_questions if q.get("topic_id")}
+            for topic in get_topics_for_course(course_filter, include_drafts=False):
+                topic_id = str(topic["id"])
+                if topic_id in linked_ids:
+                    label = f"{topic.get('sort_order', '—')}. {topic.get('title', 'Sin título')}"
+                    # Identificador para distinguir nombres repetidos.
+                    topic_labels[f"{label} · {topic_id[:8]}"] = topic_id
+        topic_options = ["Todas"] + list(topic_labels)
+        topic_filter = st.selectbox(
+            "Unidad temática",
+            topic_options,
+            key=f"egp_topic_{career}_{area_filter}_{course_filter}",
+            disabled=(course_filter == "Todos"),
+            help="Selecciona primero un curso para consultar sus unidades."
+        )
+
+    with f4:
+        difficulty_filter = st.selectbox(
+            "Dificultad", ["Todas", 1, 2, 3, 4, 5],
+            key=f"egp_difficulty_{career}"
+        )
+
+    selected_topic_id = topic_labels.get(topic_filter)
+    filtered = [
+        q for q in course_questions
+        if (selected_topic_id is None or str(q.get("topic_id")) == selected_topic_id)
+        and (difficulty_filter == "Todas" or q.get("difficulty") == difficulty_filter)
+    ]
 
     st.caption(f"{len(filtered)} preguntas disponibles")
 
