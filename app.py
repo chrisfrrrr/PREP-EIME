@@ -487,22 +487,54 @@ def simulator_view(user):
         )
     )
 
-    if st.button("Iniciar simulacro", type="primary", use_container_width=True):
-        selected = build_simulator_question_set_v16(
-            career, requested_count, selected_areas, difficulty_levels
+    # Validación previa: no registrar intentos sin consentimiento informado.
+    # Se reutiliza exactamente el selector del simulador para respetar
+    # carrera, áreas, dificultad y distribución equilibrada.
+    if not selected_areas:
+        st.warning("Selecciona al menos un área académica para continuar.")
+        return
+    if not difficulty_levels:
+        st.warning("Selecciona al menos un nivel de dificultad para continuar.")
+        return
+
+    eligible_selection = build_simulator_question_set_v16(
+        career, int(requested_count), selected_areas, difficulty_levels
+    )
+    available_count = len(eligible_selection)
+    shortage = available_count < int(requested_count)
+
+    if available_count == 0:
+        st.error("No hay preguntas que cumplan los filtros seleccionados. Modifica las áreas o la dificultad.")
+        return
+
+    if shortage:
+        st.warning(
+            f"Solicitaste {int(requested_count)} preguntas, pero únicamente hay "
+            f"{available_count} disponibles con los filtros seleccionados. "
+            "Puedes ajustar los filtros o aceptar un simulacro reducido."
         )
-        if not selected:
-            st.error("No hay preguntas que cumplan los filtros.")
-        else:
-            ok, msg, attempt_id = create_attempt(
-                user["id"], career,
-                [q["id"] for q in selected], duration
-            )
-            _flash(ok, msg)
-            if ok:
-                st.session_state["active_attempt_id"] = attempt_id
-                st.session_state["attempt_index"] = 0
-                st.rerun()
+        area_counts = {}
+        for q in eligible_selection:
+            area_name = q.get("area") or "Sin área"
+            area_counts[area_name] = area_counts.get(area_name, 0) + 1
+        st.caption("Disponibilidad por área: " + " · ".join(
+            f"{area}: {area_counts.get(area, 0)}"
+            for area in selected_areas
+        ))
+        start_label = f"Aceptar e iniciar con {available_count} preguntas"
+    else:
+        start_label = "Iniciar simulacro"
+
+    if st.button(start_label, type="primary", use_container_width=True):
+        ok, msg, attempt_id = create_attempt(
+            user["id"], career,
+            [q["id"] for q in eligible_selection], duration
+        )
+        _flash(ok, msg)
+        if ok:
+            st.session_state["active_attempt_id"] = attempt_id
+            st.session_state["attempt_index"] = 0
+            st.rerun()
 
     st.markdown("---")
     _attempt_history(user)
