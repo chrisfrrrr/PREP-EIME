@@ -22,6 +22,36 @@ def _client():
     return get_supabase_client(require_auth=True)
 
 
+def _fetch_all_pages(query_factory, *, order_column="id", desc=False, page_size=500):
+    """Retrieve all PostgREST rows in bounded pages, avoiding the default 1,000-row cap.
+
+    query_factory must create a fresh query each time; ordering must be stable.
+    Exceptions propagate so a failed page cannot silently appear as complete data.
+    """
+    rows = []
+    offset = 0
+    while True:
+        query = query_factory().order(order_column, desc=desc)
+        batch = query.range(offset, offset + page_size - 1).execute().data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        offset += page_size
+
+
+def _fetch_questions_by_ids(client, ids, columns, *, published_only=False):
+    """Bound IN filters and paginate each result set for large career question banks."""
+    result = []
+    unique_ids = list(dict.fromkeys(ids))
+    for start in range(0, len(unique_ids), 200):
+        chunk = unique_ids[start:start + 200]
+        def query():
+            q = client.table("questions").select(columns).in_("id", chunk)
+            return q.eq("status", "publicado") if published_only else q
+        result.extend(_fetch_all_pages(query))
+    return result
+
+
 def get_careers():
     if DEMO_MODE:
         return [{"code": k, "name": v} for k,v in CAREERS.items()]
@@ -85,10 +115,10 @@ def get_questions_for_career(career_code):
     if DEMO_MODE: return DEMO_QUESTIONS
     c=_client()
     if not c or not career_code: return []
-    links=c.table("question_careers").select("question_id").eq("career_code",career_code).execute().data or []
+    links=_fetch_all_pages(lambda: c.table("question_careers").select("question_id").eq("career_code",career_code), order_column="question_id")
     ids=[x["question_id"] for x in links]
     if not ids: return []
-    return c.table("questions").select("id,area_id,course_code,topic_id,question_text,expected_answer,difficulty,competency,question_type,status").in_("id",ids).eq("status","publicado").execute().data or []
+    return _fetch_questions_by_ids(c, ids, "id,area_id,course_code,topic_id,question_text,expected_answer,difficulty,competency,question_type,status", published_only=True)
 
 
 CONTENT_STATUSES = ["borrador","en_revision","aprobado","publicado","archivado"]
@@ -281,11 +311,19 @@ def get_all_questions(include_drafts=True):
     if not include_drafts:
         q = q.eq("status", "publicado")
 
-    questions = q.order("created_at", desc=True).execute().data or []
+    questions = _fetch_all_pages(
+        lambda: c.table("questions").select(
+            "id,area_id,course_code,topic_id,question_text,expected_answer,"
+            "difficulty,competency,question_type,status,created_by,created_at"
+        ).eq("status", "publicado") if not include_drafts else c.table("questions").select(
+            "id,area_id,course_code,topic_id,question_text,expected_answer,"
+            "difficulty,competency,question_type,status,created_by,created_at"
+        )
+    )
     if not questions:
         return []
 
-    links = c.table("question_careers").select("question_id,career_code").execute().data or []
+    links = _fetch_all_pages(lambda: c.table("question_careers").select("question_id,career_code"), order_column="question_id")
     cmap = {}
     for link in links:
         cmap.setdefault(link["question_id"], []).append(link["career_code"])
@@ -488,25 +526,19 @@ def get_published_questions_for_simulator(career_code):
     if not c or not career_code:
         return []
 
-    links = (
-        c.table("question_careers")
-        .select("question_id")
-        .eq("career_code", career_code)
-        .execute().data or []
+    links = _fetch_all_pages(
+        lambda: c.table("question_careers").select("question_id").eq("career_code", career_code),
+        order_column="question_id",
     )
     ids = [x["question_id"] for x in links]
     if not ids:
         return []
 
-    rows = (
-        c.table("questions")
-        .select(
-            "id,area_id,course_code,topic_id,question_text,expected_answer,"
-            "difficulty,competency,question_type,status"
-        )
-        .eq("status", "publicado")
-        .in_("id", ids)
-        .execute().data or []
+    rows = _fetch_questions_by_ids(
+        c, ids,
+        "id,area_id,course_code,topic_id,question_text,expected_answer,"
+        "difficulty,competency,question_type,status",
+        published_only=True,
     )
     return rows
 
@@ -866,8 +898,11 @@ def get_all_questions_v16(include_drafts=True):
     if not include_drafts:
         q = q.eq("status", "publicado")
 
-    questions = q.order("created_at", desc=True).execute().data or []
-    links = c.table("question_careers").select("question_id,career_code").execute().data or []
+    questions = _fetch_all_pages(
+        lambda: c.table("questions").select(_question_select_v16()).eq("status", "publicado")
+        if not include_drafts else c.table("questions").select(_question_select_v16())
+    )
+    links = _fetch_all_pages(lambda: c.table("question_careers").select("question_id,career_code"), order_column="question_id")
 
     cmap = {}
     for link in links:
@@ -887,23 +922,15 @@ def get_published_questions_for_simulator_v16(career_code):
     if not c or not career_code:
         return []
 
-    links = (
-        c.table("question_careers")
-        .select("question_id")
-        .eq("career_code", career_code)
-        .execute().data or []
+    links = _fetch_all_pages(
+        lambda: c.table("question_careers").select("question_id").eq("career_code", career_code),
+        order_column="question_id",
     )
     ids = [x["question_id"] for x in links]
     if not ids:
         return []
 
-    rows = (
-        c.table("questions")
-        .select(_question_select_v16())
-        .eq("status", "publicado")
-        .in_("id", ids)
-        .execute().data or []
-    )
+    rows = _fetch_questions_by_ids(c, ids, _question_select_v16(), published_only=True)
     for row in rows:
         row["answer_config"] = row.get("answer_config") or {}
         row["rubric"] = row.get("rubric") or []
@@ -1326,7 +1353,7 @@ from datetime import datetime, timezone
 def get_quality_reviews():
     c=_client()
     if not c: return {}
-    return {r['question_id']:r for r in (c.table('question_quality_reviews').select('*').execute().data or [])}
+    return {r['question_id']: r for r in _fetch_all_pages(lambda: c.table('question_quality_reviews').select('*'), order_column='question_id')}
 
 def save_quality_review(question_id, reviewer_id, checks, notes):
     c=_client()
