@@ -764,11 +764,42 @@ def progress_view(user):
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    if not df.empty and df["Resultado"].notna().any():
-        chart = df.dropna(subset=["Resultado"]).copy()
-        chart["Intento"] = range(1, len(chart) + 1)
-        st.markdown("### Evolución del desempeño")
-        st.line_chart(chart.set_index("Intento")["Resultado"])
+    st.markdown("### Evolución del desempeño")
+    evaluated_attempts = sorted(
+        (a for a in completed if a.get("score") is not None),
+        key=lambda a: a.get("started_at") or "",
+    )
+    if not evaluated_attempts:
+        st.info("Aún no hay resultados evaluados para mostrar una evolución.")
+    else:
+        import plotly.graph_objects as go
+
+        values = [float(a["score"]) for a in evaluated_attempts]
+        labels = [f"Intento {i}" for i in range(1, len(values) + 1)]
+        dates = [(a.get("started_at") or "")[:10] or "Sin fecha"
+                 for a in evaluated_attempts]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=labels,
+            y=values,
+            mode="lines+markers" if len(values) > 1 else "markers",
+            marker=dict(size=12),
+            line=dict(width=3),
+            customdata=dates,
+            hovertemplate="%{x}<br>Fecha: %{customdata}<br>Resultado: %{y:.1f}%<extra></extra>",
+            name="Resultado",
+        ))
+        fig.update_layout(
+            height=320,
+            margin=dict(l=10, r=10, t=15, b=10),
+            showlegend=False,
+            xaxis_title="Simulacro",
+            yaxis_title="Resultado (%)",
+            yaxis=dict(range=[0, 100], ticksuffix="%"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        if len(values) == 1:
+            st.caption("Solo hay un simulacro evaluado. La tendencia se mostrará cuando completes otro.")
 
     st.markdown("---")
     _attempt_history(user)
