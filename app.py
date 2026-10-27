@@ -277,16 +277,25 @@ def egp_view(user):
             courses.get(q.get("course_code"), {}).get("area", "Sin área")
             for q in questions
         })
-        area_filter = st.selectbox("Área", area_options)
+        area_filter = st.selectbox("Área", area_options, key=f"egp_area_{career}")
 
+    # Las opciones de curso dependen del área seleccionada y de la carrera.
+    area_questions = [
+        q for q in questions
+        if area_filter == "Todas"
+        or courses.get(q.get("course_code"), {}).get("area", "Sin área") == area_filter
+    ]
     with f2:
         course_options = ["Todos"] + sorted({
-            q.get("course_code") for q in questions if q.get("course_code")
+            q.get("course_code") for q in area_questions if q.get("course_code")
         })
-        course_filter = st.selectbox("Curso", course_options)
+        # Clave por área: al cambiar de área, el curso anterior no queda seleccionado.
+        course_filter = st.selectbox(
+            "Curso", course_options, key=f"egp_course_{career}_{area_filter}"
+        )
 
     with f3:
-        difficulty_filter = st.selectbox("Dificultad", ["Todas", 1, 2, 3, 4, 5])
+        difficulty_filter = st.selectbox("Dificultad", ["Todas", 1, 2, 3, 4, 5], key=f"egp_difficulty_{career}")
 
     filtered = []
     for q in questions:
