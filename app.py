@@ -1956,14 +1956,19 @@ def administrative_grading_view(user):
             k1.metric("Respuestas por completar", pending_answers)
             k2.metric("Simulacros publicados (%)", f"{publish_pct:.1f}%")
             k3.metric("Listos para publicar", sum(r["estado_panel"] == "Evaluado" for r in dashboard))
-            # La selección de trabajo prevalece sobre los filtros tras guardar.
-            # Por ejemplo, un simulacro puede pasar de Pendiente a En evaluación.
-            active_attempt_id = st.session_state.get("admin_queue_selected")
-            if active_attempt_id and not any(r["id"] == active_attempt_id for r in visible):
+            # Mantener la selección activa incluso cuando el estado cambia y
+            # la clasificación de la bandeja se reordena al guardar.
+            active_attempt_id = st.session_state.get("admin_active_attempt_id") or st.session_state.get("admin_queue_selected")
+            if active_attempt_id:
                 active_row = next((r for r in dashboard if r["id"] == active_attempt_id), None)
                 if active_row is not None:
+                    visible = [r for r in visible if r["id"] != active_attempt_id]
                     visible.insert(0, active_row)
-                    st.caption("Se mantiene abierto el simulacro en edición, aunque ya no coincida con los filtros.")
+                    # Se fija la selección por ID, no por posición en la lista.
+                    st.session_state["admin_queue_selected"] = active_attempt_id
+                    if not any(r["id"] == active_attempt_id for r in dashboard if
+                               (status_filter == "Todos" or r["estado_panel"] == status_filter)):
+                        st.caption("Se mantiene abierto el simulacro en edición, aunque cambie de estado.")
             if not visible:
                 st.info("No hay simulacros que coincidan con los filtros.")
                 return
@@ -2084,12 +2089,14 @@ def administrative_grading_view(user):
                 format_func=lambda aid: next(
                     f"{r['id'][:8]} · {r['nombre_estudiante']} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
                     for r in visible if r["id"] == aid), key="admin_queue_selected")
+            st.session_state["admin_active_attempt_id"] = selected_id
             attempt = next(r for r in attempts if r["id"] == selected_id)
         except Exception as dashboard_error:
             st.warning(f"No se pudo cargar el panel: {dashboard_error}")
             idx=st.selectbox("Simulacro",range(len(attempts)),format_func=lambda i:
                 f"{attempts[i]['id'][:8]} · {attempts[i].get('career_code','')} · {attempts[i].get('grading_status','pendiente')}")
             attempt=attempts[idx]
+            st.session_state["admin_active_attempt_id"] = attempt["id"]
         tracking=grading_admin.progress(attempt["id"])
         st.subheader("Seguimiento de la evaluación")
         m1,m2,m3,m4=st.columns(4)
@@ -2221,6 +2228,10 @@ def administrative_grading_view(user):
         if save_comment or save_comment_next:
             try:
                 grading_admin.save_feedback(a["id"], observation, recommendation)
+                st.session_state["admin_active_attempt_id"] = attempt["id"]
+                st.session_state["admin_queue_selected"] = attempt["id"]
+                if not save_comment_next:
+                    st.session_state[selection_key] = a["id"]
                 if save_comment_next:
                     if not advance_answer():
                         st.info("Última pregunta del simulacro. No se cambió de simulacro.")
@@ -2234,6 +2245,10 @@ def administrative_grading_view(user):
         if submit or submit_next:
             try:
                 result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
+                st.session_state["admin_active_attempt_id"] = attempt["id"]
+                st.session_state["admin_queue_selected"] = attempt["id"]
+                if not submit_next:
+                    st.session_state[selection_key] = a["id"]
                 if submit_next:
                     if not advance_answer():
                         st.info("Última pregunta del simulacro. No se cambió de simulacro.")
