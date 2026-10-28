@@ -833,7 +833,7 @@ def get_student_attempts(student_id):
         c.table("attempts")
         .select(
             "id,attempt_type,career_code,started_at,finished_at,score,status,"
-            "duration_minutes,question_count,metadata"
+            "duration_minutes,question_count,metadata,grading_mode,grading_status"
         )
         .eq("student_id", student_id)
         .order("started_at", desc=True)

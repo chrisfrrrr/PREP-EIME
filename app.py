@@ -380,6 +380,14 @@ def _attempt_history(user):
         st.info("Aún no tienes simulacros registrados.")
         return
 
+    # Para simulacros administrativos, la nota visible procede solo de la RPC.
+    for attempt in attempts:
+        if attempt.get("grading_mode") == "administrativa":
+            try:
+                official = grading_admin.published_result(attempt["id"])
+                attempt["score"] = official.get("score") if official and official.get("published") else None
+            except Exception:
+                attempt["score"] = None  # Ante fallos, no revelar una nota.
     rows = []
     for attempt in attempts:
         raw_score = attempt.get("score")
@@ -708,7 +716,8 @@ def attempt_review_view(user):
                 st.write(a.get("answer_text") or "Sin respuesta")
                 st.markdown("**Solución esperada**")
                 st.info(a.get("expected_answer") or "Sin solución registrada")
-        st.info("La calificación estará disponible cuando la administración la publique oficialmente.")
+        if not (official and official.get("published")):
+            st.info("La calificación estará disponible cuando la administración la publique oficialmente.")
         if st.button("← Volver al simulador"):
             st.session_state.pop("review_attempt_id", None)
             st.rerun()
@@ -774,7 +783,7 @@ def attempt_review_view(user):
                     st.markdown("**Rúbrica de referencia**")
                     st.dataframe(pd.DataFrame(a["rubric"]), use_container_width=True, hide_index=True)
 
-    recompute_attempt_score_v16(attempt_id)
+    # No recalcular notas durante una operación de lectura.
     diag = get_attempt_diagnostics_v16(attempt_id)
 
     st.markdown("---")
