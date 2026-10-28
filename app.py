@@ -1965,7 +1965,8 @@ def administrative_grading_view(user):
                     visible = [r for r in visible if r["id"] != active_attempt_id]
                     visible.insert(0, active_row)
                     # Se fija la selección por ID, no por posición en la lista.
-                    st.session_state["admin_queue_selected"] = active_attempt_id
+                    # No modificar la clave de un selectbox ya instanciado.
+                    # La selección del usuario se conserva en el propio widget.
                     if not any(r["id"] == active_attempt_id for r in dashboard if
                                (status_filter == "Todos" or r["estado_panel"] == status_filter)):
                         st.caption("Se mantiene abierto el simulacro en edición, aunque cambie de estado.")
@@ -2157,6 +2158,11 @@ def administrative_grading_view(user):
         # La selección se guarda por ID y por simulacro, no por posición global.
         selection_key = f"admin_selected_answer_{attempt['id']}"
         available_ids = [row["id"] for row in answers]
+        # Aplicar navegación pendiente ANTES de instanciar el selectbox.
+        pending_answer = st.session_state.pop("admin_pending_answer_id", None)
+        pending_attempt = st.session_state.pop("admin_pending_attempt_id", None)
+        if pending_attempt == attempt["id"] and pending_answer in available_ids:
+            st.session_state[selection_key] = pending_answer
         if st.session_state.get(selection_key) not in available_ids:
             st.session_state[selection_key] = available_ids[0]
         selected_answer_id = st.selectbox(
@@ -2220,18 +2226,17 @@ def administrative_grading_view(user):
         def advance_answer():
             current_index = available_ids.index(a["id"])
             if current_index + 1 < len(available_ids):
-                st.session_state[selection_key] = available_ids[current_index + 1]
+                st.session_state["admin_pending_answer_id"] = available_ids[current_index + 1]
+                st.session_state["admin_pending_attempt_id"] = attempt["id"]
                 return True
-            st.session_state[selection_key] = available_ids[-1]
+            # En la última pregunta no se modifica la selección.
             return False
 
         if save_comment or save_comment_next:
             try:
                 grading_admin.save_feedback(a["id"], observation, recommendation)
                 st.session_state["admin_active_attempt_id"] = attempt["id"]
-                st.session_state["admin_queue_selected"] = attempt["id"]
-                if not save_comment_next:
-                    st.session_state[selection_key] = a["id"]
+                # El selector de simulacro ya conserva su valor.
                 if save_comment_next:
                     if not advance_answer():
                         st.info("Última pregunta del simulacro. No se cambió de simulacro.")
@@ -2246,9 +2251,7 @@ def administrative_grading_view(user):
             try:
                 result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
                 st.session_state["admin_active_attempt_id"] = attempt["id"]
-                st.session_state["admin_queue_selected"] = attempt["id"]
-                if not submit_next:
-                    st.session_state[selection_key] = a["id"]
+                # El selector de simulacro ya conserva su valor.
                 if submit_next:
                     if not advance_answer():
                         st.info("Última pregunta del simulacro. No se cambió de simulacro.")
@@ -2264,7 +2267,8 @@ def administrative_grading_view(user):
         with nav_prev:
             if st.button("← Pregunta anterior", key=f"admin_prev_{attempt['id']}",
                          disabled=available_ids.index(a['id']) == 0):
-                st.session_state[selection_key] = available_ids[available_ids.index(a['id']) - 1]
+                st.session_state["admin_pending_answer_id"] = available_ids[available_ids.index(a['id']) - 1]
+                st.session_state["admin_pending_attempt_id"] = attempt["id"]
                 st.rerun()
         with nav_next:
             if st.button("Siguiente pregunta →", key=f"admin_next_{attempt['id']}",
