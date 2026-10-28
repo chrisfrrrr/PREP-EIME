@@ -26,6 +26,7 @@ from modules.data import (
     add_topic, update_topic, delete_topic,
 )
 from modules.ui import apply_branding, page_header, metric_card
+from modules import grading_admin
 
 st.set_page_config(
     page_title="PREP-EIME",
@@ -106,6 +107,9 @@ def sidebar(user):
             "Usuarios y cohortes",
             "Analítica",
         ]
+
+    if user["role"] == "administrador":
+        common.append("Evaluación administrativa")
 
     section = st.sidebar.radio(
         "Navegación", common, label_visibility="collapsed", key="main_navigation"
@@ -644,7 +648,8 @@ def _run_active_attempt_v16(user, attempt):
             save_attempt_answer(a["id"], response)
             ok, msg = finish_attempt(attempt["id"])
             if ok:
-                finalize_autograded_answers(attempt["id"])
+                if attempt.get("grading_mode") != "administrativa":
+                    finalize_autograded_answers(attempt["id"])
             _flash(ok, msg)
             if ok:
                 st.session_state.pop("attempt_index", None)
@@ -665,6 +670,22 @@ def attempt_review_view(user):
         "Revisión del simulacro",
         "Resultados automáticos, autoevaluación guiada y respuestas pendientes de revisión docente",
     )
+
+    if attempt and attempt.get("grading_mode") == "administrativa":
+        page_header("Revisión del simulacro", "Tus respuestas y soluciones esperadas")
+        for i, a in enumerate(answers, 1):
+            with st.expander(f"{i}. {a.get('course_name') or 'Pregunta'}"):
+                st.markdown("**Pregunta**")
+                st.write(a.get("question_text") or "")
+                st.markdown("**Tu respuesta**")
+                st.write(a.get("answer_text") or "Sin respuesta")
+                st.markdown("**Solución esperada**")
+                st.info(a.get("expected_answer") or "Sin solución registrada")
+        st.info("La calificación estará disponible cuando la administración la publique oficialmente.")
+        if st.button("← Volver al simulador"):
+            st.session_state.pop("review_attempt_id", None)
+            st.rerun()
+        return
 
     for i,a in enumerate(answers,1):
         mode = a.get("evaluation_mode") or "autoevaluacion"
@@ -1675,6 +1696,9 @@ def review_answers_view(user):
 
     pending_attempts = []
     for a in attempts:
+        record = get_attempt(a["id"]) or {}
+        if record.get("grading_mode") == "administrativa":
+            continue
         answers = get_attempt_answers_v16(a["id"])
         pending = [
             x for x in answers
@@ -1759,6 +1783,66 @@ def review_answers_view(user):
                     recompute_attempt_score_v16(attempt["id"])
                     st.rerun()
 
+def administrative_grading_view(user):
+    page_header("Evaluación administrativa", "Rúbricas A, B y C · Evaluación por criterios")
+    if user.get("role") != "administrador" or user.get("status") != "activo":
+        st.error("Acceso exclusivo para administradores activos")
+        return
+    try:
+        attempts = grading_admin.attempts()
+        rubrics = grading_admin.rubrics()
+        if not attempts or not rubrics:
+            st.info("No hay simulacros administrativos finalizados o rúbricas activas.")
+            return
+        idx=st.selectbox("Simulacro",range(len(attempts)),format_func=lambda i:
+            f"{attempts[i]['id'][:8]} · {attempts[i].get('career_code','')} · {attempts[i].get('grading_status','pendiente')}")
+        attempt=attempts[idx]
+        answers=get_attempt_answers_v16(attempt["id"])
+        if not answers:
+            st.info("El simulacro no tiene respuestas")
+            return
+        j=st.selectbox("Respuesta",range(len(answers)),format_func=lambda i:
+            f"{i+1}. {answers[i].get('course_name','Curso')} · {answers[i]['id'][:8]}")
+        a=answers[j]
+        st.markdown("**Pregunta**")
+        st.write(a.get("question_text") or "Sin enunciado")
+        st.markdown("**Respuesta del estudiante**")
+        st.write(a.get("answer_text") or "Sin respuesta")
+        with st.expander("Solución esperada"):
+            st.write(a.get("expected_answer") or "No registrada")
+        previous,scores=grading_admin.evaluation(a["id"])
+        mapping={r["code"]:r for r in rubrics}
+        prior=next((r["code"] for r in rubrics if previous and r["id"]==previous["rubric_id"]),rubrics[0]["code"])
+        code=st.selectbox("Rúbrica",list(mapping),index=list(mapping).index(prior),
+            format_func=lambda x:f"{x} · {mapping[x]['name']}",key=f"rubric_{a['id']}")
+        criteria=grading_admin.criteria(mapping[code]["id"])
+        saved={int(x["criterion_order"]):x["performance_level"] for x in scores} if code==prior else {}
+        factors={"excelente":1.0,"bueno":0.8,"regular":0.6,"deficiente":0.3,"no_demostrado":0.0}
+        items=[]
+        total=0.0
+        with st.form(f"admin_grade_{a['id']}_{code}"):
+            st.caption(f"Estado: {(previous or {}).get('status','Nuevo')} · Versión: {(previous or {}).get('version','—')}")
+            for criterion in criteria:
+                n=int(criterion["criterion_order"])
+                opts=["sin_evaluar"]+list(factors)
+                val=saved.get(n,"sin_evaluar")
+                level=st.selectbox(f"{n}. {criterion['name']} · máximo {criterion['max_points']} puntos",
+                    opts,index=opts.index(val) if val in opts else 0,
+                    format_func=lambda x:x.replace('_',' ').capitalize(),key=f"grade_{a['id']}_{code}_{n}")
+                if level!="sin_evaluar":
+                    items.append({"order":n,"level":level})
+                    total+=float(criterion["max_points"])*factors[level]
+            st.metric("Puntos parciales (no publicados)",f"{total:.2f}/100")
+            st.caption(f"{len(items)} de 5 criterios. 'Sin evaluar' es distinto de 'No demostrado'.")
+            submit=st.form_submit_button("Guardar evaluación",type="primary",
+                disabled=attempt.get("grading_status")=="publicado")
+        if submit:
+            result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
+            st.success(f"Guardado correctamente: {result}")
+            st.rerun()
+    except Exception as exc:
+        st.error(f"No se pudo completar la operación: {exc}")
+
 def users_view(user):
     page_header("Usuarios y cohortes", "Administración de acceso")
     st.info(
@@ -1830,6 +1914,8 @@ elif section == "Control de calidad":
     quality_management_view(user)
 elif section == "Revisión de respuestas":
     review_answers_view(user)
+elif section == "Evaluación administrativa":
+    administrative_grading_view(user)
 elif section == "Usuarios y cohortes":
     users_view(user)
 elif section == "Analítica":
