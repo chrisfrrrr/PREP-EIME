@@ -918,7 +918,17 @@ def progress_view(user):
         rows.append({
             "Fecha": (a.get("started_at") or "")[:10],
             "Preguntas": a.get("question_count"),
-            "Resultado": float(a["score"]) if a.get("score") is not None else None,
+            "Resultado": (
+                f"{float(a['score']):.1f}%" if a.get("score") is not None
+                else (
+                    "Pendiente de publicación"
+                    if a.get("grading_mode") == "administrativa"
+                    and a.get("grading_status") in ("evaluado", "completo")
+                    else "Pendiente de evaluación"
+                    if a.get("grading_mode") == "administrativa"
+                    else "Sin calificación"
+                )
+            ),
         })
 
     df = pd.DataFrame(rows)
