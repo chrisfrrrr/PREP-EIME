@@ -1981,10 +1981,66 @@ def administrative_grading_view(user):
             report = pd.DataFrame(table_rows)
             st.dataframe(report.drop(columns=["Estudiante (ID)", "Publicado por (ID)"]).assign(
                 Simulacro=lambda df: df["Simulacro"].str[:8]), use_container_width=True, hide_index=True)
-            st.download_button("Descargar reporte para Excel (CSV)",
-                data=report.to_csv(index=False).encode("utf-8-sig"),
-                file_name="PREP_EIME_evaluaciones_administrativas.csv",
-                mime="text/csv", use_container_width=False)
+            # Exportación nativa Excel con filtros, formato y hoja de resumen.
+            from io import BytesIO
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+            from openpyxl.worksheet.table import Table, TableStyleInfo
+
+            excel_buffer = BytesIO()
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Evaluaciones"
+            sheet.append(list(report.columns))
+            for values in report.itertuples(index=False, name=None):
+                sheet.append([None if pd.isna(v) else v for v in values])
+            sheet.freeze_panes = "A2"
+            sheet.sheet_view.showGridLines = False
+            for cell in sheet[1]:
+                cell.font = Font(name="Aptos", bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", fgColor="17365D")
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+            sheet.row_dimensions[1].height = 32
+            if len(report):
+                last_col = get_column_letter(len(report.columns))
+                excel_table = Table(displayName="TablaEvaluaciones", ref=f"A1:{last_col}{len(report)+1}")
+                excel_table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2",
+                    showFirstColumn=False, showLastColumn=False,
+                    showRowStripes=True, showColumnStripes=False)
+                sheet.add_table(excel_table)
+            for col_idx, name in enumerate(report.columns, 1):
+                width = min(44, max(14, len(str(name)) + 3))
+                if name in ("Nombre", "Estudiante (ID)", "Simulacro"):
+                    width = 38
+                if name in ("Finalizado (Guatemala)", "Publicado (UTC)"):
+                    width = 27
+                sheet.column_dimensions[get_column_letter(col_idx)].width = width
+            if "Nota oficial" in report.columns:
+                score_col = report.columns.get_loc("Nota oficial") + 1
+                for row_num in range(2, len(report) + 2):
+                    sheet.cell(row_num, score_col).number_format = '0.00'
+            summary = workbook.create_sheet("Resumen")
+            summary.append(["PREP-EIME · Resumen de evaluaciones"])
+            summary.merge_cells("A1:B1")
+            summary["A1"].font = Font(name="Aptos Display", size=16, bold=True, color="17365D")
+            summary.append(["Indicador", "Cantidad"])
+            for state in ("Pendiente", "En evaluación", "Evaluado", "Publicado"):
+                summary.append([state, sum(r["estado_panel"] == state for r in visible)])
+            summary.append(["Simulacros incluidos", len(visible)])
+            summary.append(["Respuestas pendientes", sum(r["pendientes"] + r["borradores"] for r in visible)])
+            summary.column_dimensions["A"].width = 38
+            summary.column_dimensions["B"].width = 20
+            summary.freeze_panes = "A3"
+            for cell in summary[2]:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", fgColor="17365D")
+            workbook.save(excel_buffer)
+            st.download_button("Descargar reporte en Excel (.xlsx)",
+                data=excel_buffer.getvalue(),
+                file_name="PREP_EIME_evaluaciones_administrativas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=False)
             selected_id = st.selectbox("Abrir simulacro", [r["id"] for r in visible],
                 format_func=lambda aid: next(
                     f"{r['id'][:8]} · {r['nombre_estudiante']} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
