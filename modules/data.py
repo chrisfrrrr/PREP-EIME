@@ -614,8 +614,10 @@ def create_attempt(student_id, career_code, question_ids, duration_minutes=60):
         "metadata": {
             "question_ids": question_ids,
             "version": "v1.5",
-            "evaluation_mode": "autoevaluacion_guiada",
+            "evaluation_mode": "evaluacion_administrativa",
         },
+        "grading_mode": "administrativa",
+        "grading_status": "pendiente",
     }
 
     try:
@@ -629,9 +631,6 @@ def create_attempt(student_id, career_code, question_ids, duration_minutes=60):
                 "attempt_id": attempt_id,
                 "question_id": qid,
                 "answer_text": None,
-                "score": None,
-                "self_score": None,
-                "evaluation_status": "pendiente",
             }
             for qid in question_ids
         ]).execute()
@@ -767,7 +766,7 @@ def finish_attempt(attempt_id):
         )
         if not res.data:
             return False, "No fue posible finalizar el intento."
-        return True, "Simulacro finalizado. Ahora realiza la autoevaluación guiada."
+        return True, "Simulacro finalizado. La evaluación corresponde al administrador."
     except Exception as e:
         return False, f"No fue posible finalizar el intento: {e}"
 

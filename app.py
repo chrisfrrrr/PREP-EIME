@@ -425,7 +425,7 @@ def _attempt_history(user):
 def simulator_view(user):
     page_header(
         "Simulador EGP",
-        "Simulacro escrito con calificación automática, autoevaluación y rúbricas",
+        "Simulacro escrito con evaluación administrativa mediante rúbricas",
     )
 
     if user["role"] != "estudiante":
