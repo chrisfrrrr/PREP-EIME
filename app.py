@@ -1004,6 +1004,9 @@ def progress_view(user):
             st.caption("Solo hay un simulacro evaluado. La tendencia se mostrará cuando completes otro.")
 
     st.markdown("---")
+    from modules.student_guidance import render as render_student_guidance
+    render_student_guidance(completed)
+    st.markdown("---")
     _attempt_history(user)
 
 
