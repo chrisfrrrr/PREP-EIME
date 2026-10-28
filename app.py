@@ -1882,7 +1882,7 @@ def administrative_grading_view(user):
                     # Deliberately disabled until database security migration is verified.
                     ready_to_publish = grading_admin.publication_enabled()
                     if not ready_to_publish:
-                        st.warning("La publicación está preparada, pero requiere validar las protecciones de Supabase antes de activarla.")
+                        st.warning("Ejecuta la migración 131 y valida la autorización antes de activar ENABLE_ADMIN_PUBLICATION=true en Streamlit Secrets.")
                     confirmed = st.checkbox(
                         "Confirmo que revisé las evaluaciones y deseo publicar la nota oficial",
                         key=f"publish_confirm_{attempt['id']}",
