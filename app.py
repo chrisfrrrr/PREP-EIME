@@ -1797,12 +1797,29 @@ def administrative_grading_view(user):
         idx=st.selectbox("Simulacro",range(len(attempts)),format_func=lambda i:
             f"{attempts[i]['id'][:8]} · {attempts[i].get('career_code','')} · {attempts[i].get('grading_status','pendiente')}")
         attempt=attempts[idx]
+        tracking=grading_admin.progress(attempt["id"])
+        st.subheader("Seguimiento de la evaluación")
+        m1,m2,m3,m4=st.columns(4)
+        m1.metric("Respuestas",tracking["total"])
+        m2.metric("Completas",tracking["completas"])
+        m3.metric("Borradores",tracking["borradores"])
+        m4.metric("Pendientes",tracking["pendientes"])
+        st.progress(tracking["porcentaje"]/100.0,
+            text=f"Avance de evaluación: {tracking['porcentaje']:.1f}%")
+        if tracking["total"] and tracking["completas"]==tracking["total"]:
+            st.success("Todas las respuestas están evaluadas. Publicación todavía no habilitada.")
+        else:
+            st.info("La publicación estará disponible tras validar los controles de seguridad.")
         answers=get_attempt_answers_v16(attempt["id"])
         if not answers:
             st.info("El simulacro no tiene respuestas")
             return
-        j=st.selectbox("Respuesta",range(len(answers)),format_func=lambda i:
-            f"{i+1}. {answers[i].get('course_name','Curso')} · {answers[i]['id'][:8]}")
+        def answer_label(i):
+            row=answers[i]
+            ev=tracking["por_respuesta"].get(row["id"],{})
+            state={"completa":"Completa","borrador":"Borrador"}.get(ev.get("status"),"Pendiente")
+            return f"{i+1}. {row.get('course_name','Curso')} · {state} · {row['id'][:8]}"
+        j=st.selectbox("Respuesta",range(len(answers)),format_func=answer_label)
         a=answers[j]
         st.markdown("**Pregunta**")
         st.write(a.get("question_text") or "Sin enunciado")
