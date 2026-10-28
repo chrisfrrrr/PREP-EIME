@@ -1807,9 +1807,17 @@ def administrative_grading_view(user):
         st.progress(tracking["porcentaje"]/100.0,
             text=f"Avance de evaluación: {tracking['porcentaje']:.1f}%")
         if tracking["total"] and tracking["completas"]==tracking["total"]:
-            st.success("Todas las respuestas están evaluadas. Publicación todavía no habilitada.")
+            st.success("Todas las respuestas están evaluadas.")
+            preview=grading_admin.publication_preview(attempt["id"])
+            if preview["ready"]:
+                st.metric("Nota general prevista (solo administrador)",f"{preview['score']:.2f}/100")
+                st.caption("Promedio simple de las puntuaciones de todas las respuestas. La nota definitiva la calcula Supabase al publicar.")
+                st.warning("La publicación permanece deshabilitada hasta completar los controles de inserción, lectura y transición de estados en Supabase.")
+                st.button("Publicar resultados",disabled=True,key=f"publish_disabled_{attempt['id']}")
+            else:
+                st.error("No se pudo verificar la integridad de las cinco puntuaciones por respuesta.")
         else:
-            st.info("La publicación estará disponible tras validar los controles de seguridad.")
+            st.info("Complete las cinco valoraciones de cada respuesta antes de publicar.")
         answers=get_attempt_answers_v16(attempt["id"])
         if not answers:
             st.info("El simulacro no tiene respuestas")

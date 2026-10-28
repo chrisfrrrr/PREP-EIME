@@ -651,7 +651,8 @@ def get_attempt(attempt_id):
         c.table("attempts")
         .select(
             "id,student_id,attempt_type,career_code,started_at,finished_at,"
-            "score,status,duration_minutes,question_count,metadata"
+            "score,status,duration_minutes,question_count,metadata,"
+            "grading_mode,grading_status,published_at"
         )
         .eq("id", attempt_id)
         .limit(1)

@@ -50,3 +50,34 @@ def progress(attempt_id):
         "pendientes":len(ids)-complete-drafts,
         "porcentaje":100.0*complete/len(ids) if ids else 0.0,
         "por_respuesta":by_answer}
+
+
+def publication_preview(attempt_id):
+    """Compute an administrator-only preview without changing the database."""
+    state=progress(attempt_id)
+    if not state["total"] or state["completas"]!=state["total"]:
+        return {**state,"ready":False,"score":None}
+    ids=list(state["por_respuesta"])
+    eval_ids=[]
+    for answer_id in ids:
+        row=(client().table("answer_rubric_evaluations")
+            .select("id,status").eq("attempt_answer_id",answer_id).single().execute().data)
+        if not row or row["status"]!="completa":
+            return {**state,"ready":False,"score":None}
+        eval_ids.append(row["id"])
+    rows=(client().table("answer_criterion_scores")
+        .select("evaluation_id,awarded_points")
+        .in_("evaluation_id",eval_ids).execute().data or [])
+    totals={eid:[] for eid in eval_ids}
+    for row in rows:
+        if row["evaluation_id"] in totals:
+            totals[row["evaluation_id"]].append(float(row["awarded_points"]))
+    if any(len(points)!=5 for points in totals.values()):
+        return {**state,"ready":False,"score":None}
+    return {**state,"ready":True,
+            "score":round(sum(sum(points) for points in totals.values())/len(totals),2)}
+
+
+def publish(attempt_id):
+    """Always relies on Supabase's administrator-only authorization."""
+    return client().rpc("publish_attempt_grades",{"p_attempt_id":attempt_id}).execute().data
