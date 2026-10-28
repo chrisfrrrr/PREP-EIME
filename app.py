@@ -369,6 +369,25 @@ def _attempt_elapsed_minutes(attempt):
 
 
 
+def _mask_unpublished_administrative_scores(attempts):
+    """Only the publication RPC authorizes student-visible administrative scores.
+
+    This is UI-level defense in depth; database column permissions remain
+    unchanged until staff-safe RPC reads are migrated.
+    """
+    for attempt in attempts:
+        if attempt.get("grading_mode") != "administrativa":
+            continue
+        attempt["score"] = None  # Fail closed even if the RPC is unavailable.
+        try:
+            official = grading_admin.published_result(attempt["id"])
+            if official and official.get("published"):
+                attempt["score"] = official.get("score")
+        except Exception:
+            pass
+    return attempts
+
+
 def _attempt_history(user):
     """Muestra los intentos del estudiante sin alterar sus resultados."""
     if user.get("role") != "estudiante":
@@ -380,14 +399,7 @@ def _attempt_history(user):
         st.info("Aún no tienes simulacros registrados.")
         return
 
-    # Para simulacros administrativos, la nota visible procede solo de la RPC.
-    for attempt in attempts:
-        if attempt.get("grading_mode") == "administrativa":
-            try:
-                official = grading_admin.published_result(attempt["id"])
-                attempt["score"] = official.get("score") if official and official.get("published") else None
-            except Exception:
-                attempt["score"] = None  # Ante fallos, no revelar una nota.
+    _mask_unpublished_administrative_scores(attempts)
     rows = []
     for attempt in attempts:
         raw_score = attempt.get("score")
@@ -870,7 +882,9 @@ def progress_view(user):
         st.info("El progreso individual se muestra en perfiles de estudiante.")
         return
 
-    attempts = get_student_attempts(user["id"])
+    attempts = _mask_unpublished_administrative_scores(
+        get_student_attempts(user["id"])
+    )
     completed = [a for a in attempts if a.get("status") == "finalizado"]
 
     if not completed:
