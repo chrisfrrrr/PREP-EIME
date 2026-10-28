@@ -2041,6 +2041,24 @@ def administrative_grading_view(user):
                 file_name="PREP_EIME_evaluaciones_administrativas.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=False)
+            # Expediente individual y analítica administrativa, solo lectura.
+            # Se reutiliza la bandeja ya consultada; solo se leen notas publicadas.
+            with st.expander("Expedientes y analítica académica · v1.9.0", expanded=False):
+                try:
+                    from modules.academic_analytics import render_administrative_academics
+                    all_published_ids = [r["id"] for r in dashboard
+                                         if r["estado_panel"] == "Publicado"]
+                    analytics_official = {}
+                    for batch_start in range(0, len(all_published_ids), 100):
+                        batch = (grading_admin.client().table("attempts")
+                            .select("id,score")
+                            .in_("id", all_published_ids[batch_start:batch_start+100])
+                            .eq("grading_status", "publicado")
+                            .execute().data or [])
+                        analytics_official.update({r["id"]: r for r in batch})
+                    render_administrative_academics(dashboard, analytics_official)
+                except Exception as analytics_error:
+                    st.warning(f"No fue posible cargar el expediente académico: {analytics_error}")
             selected_id = st.selectbox("Abrir simulacro", [r["id"] for r in visible],
                 format_func=lambda aid: next(
                     f"{r['id'][:8]} · {r['nombre_estudiante']} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
