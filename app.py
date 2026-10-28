@@ -2086,10 +2086,23 @@ def administrative_grading_view(user):
                     render_administrative_academics(dashboard, analytics_official)
                 except Exception as analytics_error:
                     st.warning(f"No fue posible cargar el expediente académico: {analytics_error}")
-            selected_id = st.selectbox("Abrir simulacro", [r["id"] for r in visible],
+            # Streamlit conserva el valor del widget por clave, no por índice.
+            # Sincronizar ANTES de instanciarlo; el callback registra cambios manuales.
+            visible_ids = [r["id"] for r in visible]
+            active_id = st.session_state.get("admin_active_attempt_id")
+            if active_id in visible_ids and st.session_state.get("admin_queue_selected") != active_id:
+                st.session_state["admin_queue_selected"] = active_id
+            elif st.session_state.get("admin_queue_selected") not in visible_ids:
+                st.session_state["admin_queue_selected"] = visible_ids[0]
+
+            def on_admin_attempt_change():
+                st.session_state["admin_active_attempt_id"] = st.session_state["admin_queue_selected"]
+
+            selected_id = st.selectbox("Abrir simulacro", visible_ids,
                 format_func=lambda aid: next(
                     f"{r['id'][:8]} · {r['nombre_estudiante']} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
-                    for r in visible if r["id"] == aid), key="admin_queue_selected")
+                    for r in visible if r["id"] == aid), key="admin_queue_selected",
+                on_change=on_admin_attempt_change)
             st.session_state["admin_active_attempt_id"] = selected_id
             attempt = next(r for r in attempts if r["id"] == selected_id)
         except Exception as dashboard_error:
@@ -2159,10 +2172,13 @@ def administrative_grading_view(user):
         selection_key = f"admin_selected_answer_{attempt['id']}"
         available_ids = [row["id"] for row in answers]
         # Aplicar navegación pendiente ANTES de instanciar el selectbox.
-        pending_answer = st.session_state.pop("admin_pending_answer_id", None)
-        pending_attempt = st.session_state.pop("admin_pending_attempt_id", None)
-        if pending_attempt == attempt["id"] and pending_answer in available_ids:
-            st.session_state[selection_key] = pending_answer
+        pending_answer = st.session_state.get("admin_pending_answer_id")
+        pending_attempt = st.session_state.get("admin_pending_attempt_id")
+        if pending_attempt == attempt["id"]:
+            if pending_answer in available_ids:
+                st.session_state[selection_key] = pending_answer
+            st.session_state.pop("admin_pending_answer_id", None)
+            st.session_state.pop("admin_pending_attempt_id", None)
         if st.session_state.get(selection_key) not in available_ids:
             st.session_state[selection_key] = available_ids[0]
         selected_answer_id = st.selectbox(
