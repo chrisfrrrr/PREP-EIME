@@ -1910,8 +1910,18 @@ def administrative_grading_view(user):
             ev=tracking["por_respuesta"].get(row["id"],{})
             state={"completa":"Completa","borrador":"Borrador"}.get(ev.get("status"),"Pendiente")
             return f"{i+1}. {row.get('course_name','Curso')} · {state} · {row['id'][:8]}"
-        j=st.selectbox("Respuesta",range(len(answers)),format_func=answer_label)
-        a=answers[j]
+        # Mantener la respuesta seleccionada a través de st.rerun() tras guardar.
+        # La selección se guarda por ID y por simulacro, no por posición global.
+        selection_key = f"admin_selected_answer_{attempt['id']}"
+        available_ids = [row["id"] for row in answers]
+        if st.session_state.get(selection_key) not in available_ids:
+            st.session_state[selection_key] = available_ids[0]
+        selected_answer_id = st.selectbox(
+            "Respuesta", available_ids,
+            format_func=lambda answer_id: answer_label(available_ids.index(answer_id)),
+            key=selection_key,
+        )
+        a = answers[available_ids.index(selected_answer_id)]
         st.markdown("**Pregunta**")
         st.write(a.get("question_text") or "Sin enunciado")
         st.markdown("**Respuesta del estudiante**")
