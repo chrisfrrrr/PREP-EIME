@@ -1885,6 +1885,31 @@ def administrative_grading_view(user):
             cols = st.columns(4)
             for col, state in zip(cols, states):
                 col.metric(state, sum(r["estado_panel"] == state for r in dashboard))
+            # Enriquecimiento de perfiles mediante la consulta ya existente, sin permisos nuevos.
+            from datetime import datetime, timezone, timedelta, date
+            from zoneinfo import ZoneInfo
+            import io
+            from collections import defaultdict
+            guatemala_tz = ZoneInfo("America/Guatemala")
+            profile_error = None
+            try:
+                student_profiles = get_profiles_by_ids([r["student_id"] for r in dashboard if r.get("student_id")])
+            except Exception as exc:
+                student_profiles = {}
+                profile_error = str(exc)
+            for r in dashboard:
+                profile = student_profiles.get(r.get("student_id"), {})
+                r["nombre_estudiante"] = profile.get("full_name") or "Sin nombre disponible"
+                r["carne_estudiante"] = str(profile.get("student_id") or "")
+                try:
+                    dt = datetime.fromisoformat(str(r.get("finished_at") or "").replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    r["fecha_local"] = dt.astimezone(guatemala_tz)
+                except (ValueError, TypeError):
+                    r["fecha_local"] = None
+            if profile_error:
+                st.caption("Los nombres y carnés no están disponibles con los permisos actuales; se muestran los identificadores.")
             f1, f2, f3 = st.columns(3)
             with f1:
                 status_filter = st.selectbox("Estado", ["Todos", *states], key="admin_queue_status")
@@ -1892,28 +1917,77 @@ def administrative_grading_view(user):
                 careers = sorted({str(r.get("career_code")) for r in dashboard if r.get("career_code")})
                 career_filter = st.selectbox("Carrera", ["Todas", *careers], key="admin_queue_career")
             with f3:
-                search_filter = st.text_input("Buscar por ID", key="admin_queue_search").strip().lower()
+                search_filter = st.text_input("Buscar por nombre, carné o ID", key="admin_queue_search").strip().casefold()
+            d1, d2 = st.columns(2)
+            with d1:
+                start_date = st.date_input("Desde (Guatemala)", value=None, key="admin_queue_from")
+            with d2:
+                end_date = st.date_input("Hasta (Guatemala)", value=None, key="admin_queue_to")
             visible = [r for r in dashboard
                 if (status_filter == "Todos" or r["estado_panel"] == status_filter)
                 and (career_filter == "Todas" or r.get("career_code") == career_filter)
-                and (not search_filter or search_filter in str(r["id"]).lower()
-                     or search_filter in str(r.get("student_id") or "").lower())]
+                and (not search_filter or any(search_filter in str(field or "").casefold() for field in
+                    (r["id"], r.get("student_id"), r["nombre_estudiante"], r["carne_estudiante"])))
+                and (not start_date or (r["fecha_local"] and r["fecha_local"].date() >= start_date))
+                and (not end_date or (r["fecha_local"] and r["fecha_local"].date() <= end_date))]
+            # Priorizar pendientes antiguos, luego evaluación en curso y resultados cerrados.
+            priority = {"Pendiente": 0, "En evaluación": 1, "Evaluado": 2, "Publicado": 3}
+            visible.sort(key=lambda r: (priority.get(r["estado_panel"], 9),
+                r["fecha_local"] or datetime.max.replace(tzinfo=guatemala_tz)))
             st.caption(f"{len(visible)} simulacros encontrados de {len(dashboard)} registrados (máximo 200 recientes).")
+            pending_answers = sum(r["pendientes"] + r["borradores"] for r in dashboard)
+            completed_count = sum(r["estado_panel"] == "Publicado" for r in dashboard)
+            publish_pct = 100 * completed_count / len(dashboard) if dashboard else 0
+            evaluated = [r for r in dashboard if r["estado_panel"] in ("Evaluado", "Publicado") and r["fecha_local"]]
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Respuestas por completar", pending_answers)
+            k2.metric("Simulacros publicados (%)", f"{publish_pct:.1f}%")
+            k3.metric("Listos para publicar", sum(r["estado_panel"] == "Evaluado" for r in dashboard))
             if not visible:
                 st.info("No hay simulacros que coincidan con los filtros.")
                 return
-            st.dataframe(pd.DataFrame([{
-                "Simulacro": r["id"][:8],
-                "Estudiante (ID)": str(r.get("student_id") or "")[:8],
-                "Carrera": r.get("career_code") or "—",
-                "Finalizado": r.get("finished_at") or "—",
-                "Estado": r["estado_panel"],
-                "Evaluadas": f"{r['completas']}/{r['respuestas']}",
-                "Avance (%)": r["avance"],
-            } for r in visible]), use_container_width=True, hide_index=True)
+            # El resultado solo se muestra si la publicación es oficial.
+            published_ids = [r["id"] for r in visible if r["estado_panel"] == "Publicado"]
+            official_scores = {}
+            if published_ids:
+                try:
+                    for batch_start in range(0, len(published_ids), 100):
+                        published = (grading_admin.client().table("attempts")
+                            .select("id,score,grading_status,published_at,published_by")
+                            .in_("id", published_ids[batch_start:batch_start+100])
+                            .eq("grading_status", "publicado").execute().data or [])
+                        official_scores.update({item["id"]: item for item in published})
+                except Exception:
+                    st.caption("No se pudieron recuperar las notas publicadas para el reporte.")
+            table_rows = []
+            for r in visible:
+                official = official_scores.get(r["id"], {})
+                table_rows.append({
+                    "Simulacro": r["id"],
+                    "Nombre": r["nombre_estudiante"],
+                    "Carné": r["carne_estudiante"] or "No disponible",
+                    "Estudiante (ID)": r.get("student_id") or "",
+                    "Carrera": r.get("career_code") or "—",
+                    "Finalizado (Guatemala)": r["fecha_local"].strftime("%d/%m/%Y %H:%M") if r["fecha_local"] else "—",
+                    "Estado": r["estado_panel"],
+                    "Evaluadas": f"{r['completas']}/{r['respuestas']}",
+                    "Borradores": r["borradores"],
+                    "Pendientes": r["pendientes"],
+                    "Avance (%)": r["avance"],
+                    "Nota oficial": float(official["score"]) if official.get("score") is not None else None,
+                    "Publicado (UTC)": official.get("published_at") or "",
+                    "Publicado por (ID)": official.get("published_by") or "",
+                })
+            report = pd.DataFrame(table_rows)
+            st.dataframe(report.drop(columns=["Estudiante (ID)", "Publicado por (ID)"]).assign(
+                Simulacro=lambda df: df["Simulacro"].str[:8]), use_container_width=True, hide_index=True)
+            st.download_button("Descargar reporte para Excel (CSV)",
+                data=report.to_csv(index=False).encode("utf-8-sig"),
+                file_name="PREP_EIME_evaluaciones_administrativas.csv",
+                mime="text/csv", use_container_width=False)
             selected_id = st.selectbox("Abrir simulacro", [r["id"] for r in visible],
                 format_func=lambda aid: next(
-                    f"{r['id'][:8]} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
+                    f"{r['id'][:8]} · {r['nombre_estudiante']} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
                     for r in visible if r["id"] == aid), key="admin_queue_selected")
             attempt = next(r for r in attempts if r["id"] == selected_id)
         except Exception as dashboard_error:
