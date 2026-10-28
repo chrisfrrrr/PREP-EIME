@@ -1877,9 +1877,50 @@ def administrative_grading_view(user):
         if not attempts or not rubrics:
             st.info("No hay simulacros administrativos finalizados o rúbricas activas.")
             return
-        idx=st.selectbox("Simulacro",range(len(attempts)),format_func=lambda i:
-            f"{attempts[i]['id'][:8]} · {attempts[i].get('career_code','')} · {attempts[i].get('grading_status','pendiente')}")
-        attempt=attempts[idx]
+        # Panel consolidado de evaluación y filtros de la bandeja administrativa.
+        try:
+            dashboard = grading_admin.dashboard_rows()
+            st.subheader("Panel de gestión de evaluaciones")
+            states = ("Pendiente", "En evaluación", "Evaluado", "Publicado")
+            cols = st.columns(4)
+            for col, state in zip(cols, states):
+                col.metric(state, sum(r["estado_panel"] == state for r in dashboard))
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                status_filter = st.selectbox("Estado", ["Todos", *states], key="admin_queue_status")
+            with f2:
+                careers = sorted({str(r.get("career_code")) for r in dashboard if r.get("career_code")})
+                career_filter = st.selectbox("Carrera", ["Todas", *careers], key="admin_queue_career")
+            with f3:
+                search_filter = st.text_input("Buscar por ID", key="admin_queue_search").strip().lower()
+            visible = [r for r in dashboard
+                if (status_filter == "Todos" or r["estado_panel"] == status_filter)
+                and (career_filter == "Todas" or r.get("career_code") == career_filter)
+                and (not search_filter or search_filter in str(r["id"]).lower()
+                     or search_filter in str(r.get("student_id") or "").lower())]
+            st.caption(f"{len(visible)} simulacros encontrados de {len(dashboard)} registrados (máximo 200 recientes).")
+            if not visible:
+                st.info("No hay simulacros que coincidan con los filtros.")
+                return
+            st.dataframe(pd.DataFrame([{
+                "Simulacro": r["id"][:8],
+                "Estudiante (ID)": str(r.get("student_id") or "")[:8],
+                "Carrera": r.get("career_code") or "—",
+                "Finalizado": r.get("finished_at") or "—",
+                "Estado": r["estado_panel"],
+                "Evaluadas": f"{r['completas']}/{r['respuestas']}",
+                "Avance (%)": r["avance"],
+            } for r in visible]), use_container_width=True, hide_index=True)
+            selected_id = st.selectbox("Abrir simulacro", [r["id"] for r in visible],
+                format_func=lambda aid: next(
+                    f"{r['id'][:8]} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
+                    for r in visible if r["id"] == aid), key="admin_queue_selected")
+            attempt = next(r for r in attempts if r["id"] == selected_id)
+        except Exception as dashboard_error:
+            st.warning(f"No se pudo cargar el panel: {dashboard_error}")
+            idx=st.selectbox("Simulacro",range(len(attempts)),format_func=lambda i:
+                f"{attempts[i]['id'][:8]} · {attempts[i].get('career_code','')} · {attempts[i].get('grading_status','pendiente')}")
+            attempt=attempts[idx]
         tracking=grading_admin.progress(attempt["id"])
         st.subheader("Seguimiento de la evaluación")
         m1,m2,m3,m4=st.columns(4)

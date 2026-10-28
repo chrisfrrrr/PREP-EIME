@@ -102,3 +102,45 @@ def published_rubric_details(attempt_id):
         "p_attempt_id": attempt_id
     }).execute().data
     return result if isinstance(result, list) else []
+
+
+def dashboard_rows():
+    """Admin-only consolidated evaluation queue; batched reads."""
+    c = client()
+    rows = attempts()
+    if not rows:
+        return []
+    ids = [r["id"] for r in rows]
+    answers = []
+    for start in range(0, len(ids), 100):
+        answers.extend(c.table("attempt_answers").select("id,attempt_id")
+            .in_("attempt_id", ids[start:start+100]).execute().data or [])
+    answer_ids = [r["id"] for r in answers]
+    evaluations = []
+    for start in range(0, len(answer_ids), 100):
+        evaluations.extend(c.table("answer_rubric_evaluations")
+            .select("attempt_answer_id,status")
+            .in_("attempt_answer_id", answer_ids[start:start+100]).execute().data or [])
+    by_answer = {e["attempt_answer_id"]: e["status"] for e in evaluations}
+    by_attempt = {r["id"]: [] for r in rows}
+    for a in answers:
+        by_attempt[a["attempt_id"]].append(by_answer.get(a["id"], "pendiente"))
+    result = []
+    for r in rows:
+        states = by_attempt[r["id"]]
+        total = len(states)
+        complete = states.count("completa")
+        drafts = states.count("borrador")
+        if r.get("grading_status") == "publicado":
+            state = "Publicado"
+        elif total and complete == total:
+            state = "Evaluado"
+        elif complete or drafts:
+            state = "En evaluación"
+        else:
+            state = "Pendiente"
+        result.append({**r, "estado_panel": state, "respuestas": total,
+                       "completas": complete, "borradores": drafts,
+                       "pendientes": total-complete-drafts,
+                       "avance": round(100*complete/total, 1) if total else 0.0})
+    return result
