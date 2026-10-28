@@ -728,6 +728,25 @@ def attempt_review_view(user):
                 st.write(a.get("answer_text") or "Sin respuesta")
                 st.markdown("**Solución esperada**")
                 st.info(a.get("expected_answer") or "Sin solución registrada")
+                if official and official.get("published"):
+                    try:
+                        details = grading_admin.published_rubric_details(attempt_id)
+                        matching = next((d for d in details if d.get("answer_id") == a["id"]), None)
+                        if matching:
+                            st.markdown("**Evaluación por rúbrica**")
+                            st.caption(f"Rúbrica: {matching.get('rubric_name', '—')}")
+                            st.metric("Puntuación de esta respuesta",
+                                f"{float(matching.get('answer_score') or 0):.2f}/100")
+                            criteria_rows = matching.get("criteria") or []
+                            if criteria_rows:
+                                st.dataframe(pd.DataFrame([{
+                                    "Criterio": r.get("criterion_name"),
+                                    "Nivel": str(r.get("performance_level") or "").replace("_", " ").capitalize(),
+                                    "Puntos": r.get("awarded_points"),
+                                    "Máximo": r.get("max_points"),
+                                } for r in criteria_rows]), use_container_width=True, hide_index=True)
+                    except Exception:
+                        st.caption("El desglose por criterios no está disponible temporalmente.")
         if not (official and official.get("published")):
             st.info("La calificación estará disponible cuando la administración la publique oficialmente.")
         if st.button("← Volver al simulador"):
@@ -1874,12 +1893,19 @@ def administrative_grading_view(user):
             st.success("Todas las respuestas están evaluadas.")
             preview=grading_admin.publication_preview(attempt["id"])
             if preview["ready"]:
-                st.metric("Nota general prevista (solo administrador)",f"{preview['score']:.2f}/100")
-                st.caption("Promedio simple de las puntuaciones de todas las respuestas. La nota definitiva la calcula Supabase al publicar.")
                 if attempt.get("grading_status") == "publicado":
+                    official_row = (grading_admin.client().table("attempts")
+                        .select("score,published_at,published_by")
+                        .eq("id", attempt["id"]).single().execute().data or {})
+                    official_score = official_row.get("score")
+                    st.metric("Nota oficial publicada",
+                        f"{float(official_score):.2f}/100" if official_score is not None else "No disponible")
                     st.success("Este simulacro ya tiene resultados publicados.")
+                    st.caption(f"Publicado: {official_row.get('published_at') or 'Sin fecha'}")
                 else:
-                    # Deliberately disabled until database security migration is verified.
+                    st.metric("Nota general prevista (solo administrador)",f"{preview['score']:.2f}/100")
+                    st.caption("Promedio simple por respuesta; Supabase calcula la nota definitiva al publicar.")
+                    # Solo permitir publicación cuando aún no está publicado.
                     ready_to_publish = grading_admin.publication_enabled()
                     if not ready_to_publish:
                         st.warning("Ejecuta la migración 131 y valida la autorización antes de activar ENABLE_ADMIN_PUBLICATION=true en Streamlit Secrets.")

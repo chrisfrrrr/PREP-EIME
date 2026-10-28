@@ -94,3 +94,11 @@ def published_result(attempt_id):
     return client().rpc("get_my_published_attempt_result", {
         "p_attempt_id": attempt_id
     }).execute().data
+
+
+def published_rubric_details(attempt_id):
+    """Only published and owned attempts; enforced by Supabase RPC."""
+    result = client().rpc("get_my_published_rubric_details", {
+        "p_attempt_id": attempt_id
+    }).execute().data
+    return result if isinstance(result, list) else []
