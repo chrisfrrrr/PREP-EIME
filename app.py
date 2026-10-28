@@ -2090,8 +2090,9 @@ def administrative_grading_view(user):
             # Sincronizar ANTES de instanciarlo; el callback registra cambios manuales.
             visible_ids = [r["id"] for r in visible]
             active_id = st.session_state.get("admin_active_attempt_id")
-            if active_id in visible_ids and st.session_state.get("admin_queue_selected") != active_id:
-                st.session_state["admin_queue_selected"] = active_id
+            if active_id in visible_ids:
+                if st.session_state.get("admin_queue_selected") != active_id:
+                    st.session_state["admin_queue_selected"] = active_id
             elif st.session_state.get("admin_queue_selected") not in visible_ids:
                 st.session_state["admin_queue_selected"] = visible_ids[0]
 
@@ -2207,7 +2208,9 @@ def administrative_grading_view(user):
         factors={"excelente":1.0,"bueno":0.8,"regular":0.6,"deficiente":0.3,"no_demostrado":0.0}
         items=[]
         total=0.0
-        with st.form(f"admin_grade_{a['id']}_{code}"):
+        # Una sola transacción de interfaz: guardar rúbrica y retroalimentación
+        # antes de navegar. No modificar claves de widgets ya instanciados.
+        with st.form(f"admin_complete_answer_{a['id']}_{code}"):
             st.caption(f"Estado: {(previous or {}).get('status','Nuevo')} · Versión: {(previous or {}).get('version','—')}")
             for criterion in criteria:
                 n=int(criterion["criterion_order"])
@@ -2221,63 +2224,55 @@ def administrative_grading_view(user):
                     total+=float(criterion["max_points"])*factors[level]
             st.metric("Puntos parciales (no publicados)",f"{total:.2f}/100")
             st.caption(f"{len(items)} de 5 criterios. 'Sin evaluar' es distinto de 'No demostrado'.")
-            grade_col1, grade_col2 = st.columns(2)
-            with grade_col1:
-                submit=st.form_submit_button("Guardar evaluación",type="primary",
+            st.markdown("**Retroalimentación académica**")
+            st.caption("Las observaciones y recomendaciones solo serán visibles tras la publicación oficial.")
+            observation = st.text_area("Observaciones sobre la respuesta",
+                value=existing_feedback.get("observation") or "", max_chars=4000,
+                key=f"observation_{a['id']}")
+            recommendation = st.text_area("Recomendaciones de estudio",
+                value=existing_feedback.get("recommendation") or "", max_chars=4000,
+                key=f"recommendation_{a['id']}")
+            save_col, next_col = st.columns(2)
+            with save_col:
+                save_here=st.form_submit_button("Guardar todo y permanecer",type="primary",
                     disabled=attempt.get("grading_status")=="publicado")
-            with grade_col2:
-                submit_next=st.form_submit_button("Guardar evaluación y siguiente →",
-                    disabled=attempt.get("grading_status")=="publicado" or len(available_ids)<2)
-        st.markdown("**Retroalimentación académica**")
-        st.caption("Las observaciones serán visibles para el estudiante únicamente después de publicar la nota oficial.")
-        with st.form(f"admin_feedback_{a['id']}"):
-            observation = st.text_area("Observaciones sobre la respuesta", value=existing_feedback.get("observation") or "", max_chars=4000)
-            recommendation = st.text_area("Recomendaciones de estudio", value=existing_feedback.get("recommendation") or "", max_chars=4000)
-            feedback_col1, feedback_col2 = st.columns(2)
-            with feedback_col1:
-                save_comment = st.form_submit_button("Guardar retroalimentación", disabled=attempt.get("grading_status")=="publicado")
-            with feedback_col2:
-                save_comment_next = st.form_submit_button("Guardar retroalimentación y siguiente →",
-                    disabled=attempt.get("grading_status")=="publicado" or len(available_ids)<2)
+            with next_col:
+                save_next=st.form_submit_button("Guardar todo y siguiente pregunta →",
+                    disabled=attempt.get("grading_status")=="publicado")
+
         def advance_answer():
             current_index = available_ids.index(a["id"])
             if current_index + 1 < len(available_ids):
                 st.session_state["admin_pending_answer_id"] = available_ids[current_index + 1]
                 st.session_state["admin_pending_attempt_id"] = attempt["id"]
                 return True
-            # En la última pregunta no se modifica la selección.
             return False
 
-        if save_comment or save_comment_next:
+        if save_here or save_next:
+            # Una respuesta incompleta puede guardarse como borrador según las reglas
+            # existentes; nunca avanzar cuando alguna operación falla.
             try:
-                grading_admin.save_feedback(a["id"], observation, recommendation)
-                st.session_state["admin_active_attempt_id"] = attempt["id"]
-                # El selector de simulacro ya conserva su valor.
-                if save_comment_next:
-                    if not advance_answer():
-                        st.info("Última pregunta del simulacro. No se cambió de simulacro.")
-                    else:
-                        st.toast("Retroalimentación guardada. Siguiente pregunta.")
-                else:
-                    st.toast("Retroalimentación guardada. Se mantiene la pregunta actual.")
-                st.rerun()
-            except Exception as feedback_error:
-                st.error(f"No se pudo guardar la retroalimentación: {feedback_error}. Ejecuta la migración 1.9.1 una sola vez.")
-        if submit or submit_next:
-            try:
-                result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
-                st.session_state["admin_active_attempt_id"] = attempt["id"]
-                # El selector de simulacro ya conserva su valor.
-                if submit_next:
-                    if not advance_answer():
-                        st.info("Última pregunta del simulacro. No se cambió de simulacro.")
-                    else:
-                        st.toast("Rúbrica guardada. Siguiente pregunta.")
-                else:
-                    st.toast("Rúbrica guardada. Se mantiene la pregunta actual.")
-                st.rerun()
+                grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
             except Exception as grading_error:
-                st.error(f"No se pudo guardar la evaluación: {grading_error}")
+                st.error(f"No se guardó la rúbrica: {grading_error}")
+            else:
+                try:
+                    grading_admin.save_feedback(a["id"], observation, recommendation)
+                except Exception as feedback_error:
+                    st.error(f"Se guardó la rúbrica, pero no la retroalimentación: {feedback_error}. "
+                             "La pregunta permanece abierta para reintentar.")
+                else:
+                    st.session_state["admin_active_attempt_id"] = attempt["id"]
+                    st.session_state["admin_pending_attempt_id"] = attempt["id"]
+                    st.session_state["admin_pending_answer_id"] = a["id"]
+                    if save_next:
+                        if advance_answer():
+                            st.toast("Rúbrica y retroalimentación guardadas. Siguiente pregunta.")
+                        else:
+                            st.toast("Guardado completo. Esta es la última pregunta del simulacro.")
+                    else:
+                        st.toast("Rúbrica y retroalimentación guardadas. Se mantiene la pregunta.")
+                    st.rerun()
         st.caption(f"Pregunta {available_ids.index(a['id']) + 1} de {len(available_ids)} · Simulacro {attempt['id'][:8]}")
         nav_prev, nav_next = st.columns(2)
         with nav_prev:
