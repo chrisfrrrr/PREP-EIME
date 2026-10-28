@@ -596,14 +596,15 @@ def build_simulator_question_set(
 
 
 def create_attempt(student_id, career_code, question_ids, duration_minutes=60):
+    """Create and verify all question rows; cancel incomplete attempts on failure."""
     if DEMO_MODE:
         return False, "Disponible únicamente con Supabase.", None
     c = _client()
     if not c:
         return False, "No hay conexión autenticada con Supabase.", None
+    question_ids = list(dict.fromkeys(question_ids or []))
     if not question_ids:
         return False, "No hay preguntas para iniciar el simulacro.", None
-
     payload = {
         "student_id": student_id,
         "attempt_type": "simulador_escrito",
@@ -611,33 +612,36 @@ def create_attempt(student_id, career_code, question_ids, duration_minutes=60):
         "status": "en_progreso",
         "duration_minutes": int(duration_minutes),
         "question_count": len(question_ids),
-        "metadata": {
-            "question_ids": question_ids,
-            "version": "v1.5",
-            "evaluation_mode": "evaluacion_administrativa",
-        },
-        "grading_mode": "administrativa",
-        "grading_status": "pendiente",
+        "metadata": {"question_ids": question_ids, "version": "v1.8.0",
+                     "evaluation_mode": "evaluacion_administrativa"},
+        "grading_mode": "administrativa", "grading_status": "pendiente",
     }
-
+    attempt_id = None
     try:
-        res = c.table("attempts").insert(payload).execute()
-        if not res.data:
-            return False, "No se pudo crear el intento.", None
-        attempt_id = res.data[0]["id"]
-
-        c.table("attempt_answers").insert([
-            {
-                "attempt_id": attempt_id,
-                "question_id": qid,
-                "answer_text": None,
-            }
-            for qid in question_ids
-        ]).execute()
-
+        created = c.table("attempts").insert(payload).execute().data or []
+        if len(created) != 1 or not created[0].get("id"):
+            raise RuntimeError("Supabase no confirmó la creación del simulacro.")
+        attempt_id = created[0]["id"]
+        rows = [{"attempt_id": attempt_id, "question_id": qid,
+                 "answer_text": None} for qid in question_ids]
+        c.table("attempt_answers").insert(rows).execute()
+        saved = (c.table("attempt_answers").select("question_id")
+                 .eq("attempt_id", attempt_id).execute().data or [])
+        saved_ids = [row["question_id"] for row in saved]
+        if len(saved_ids) != len(question_ids) or set(saved_ids) != set(question_ids):
+            raise RuntimeError(f"Preguntas registradas: {len(saved_ids)}/{len(question_ids)}.")
         return True, "Simulacro iniciado.", attempt_id
-    except Exception as e:
-        return False, f"No fue posible iniciar el simulacro: {e}", None
+    except Exception as exc:
+        if attempt_id:
+            try:
+                c.table("attempts").update({"status": "cancelado"}).eq(
+                    "id", attempt_id).eq("status", "en_progreso").execute()
+                return False, (f"No fue posible iniciar el simulacro: {exc}. "
+                               "El intento incompleto fue cancelado automáticamente."), None
+            except Exception as cleanup_exc:
+                return False, (f"Error al iniciar: {exc}. No fue posible cancelar "
+                               f"el intento {attempt_id}: {cleanup_exc}."), None
+        return False, f"No fue posible iniciar el simulacro: {exc}", None
 
 
 def get_attempt(attempt_id):

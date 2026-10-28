@@ -441,6 +441,30 @@ def simulator_view(user):
     active = next((a for a in attempts if a.get("status") == "en_progreso"), None)
 
     if active:
+        try:
+            active_rows = get_attempt_answers_v16(active["id"])
+        except Exception as exc:
+            st.error(f"No fue posible recuperar las preguntas: {exc}")
+            return
+        if not active_rows:
+            st.error("Se encontró un intento en progreso sin preguntas recuperables.")
+            st.caption(f"Intento: {active['id']}")
+            if st.button("Cancelar intento incompleto y volver a configurar"):
+                try:
+                    from modules.supabase_client import get_supabase_client
+                    client = get_supabase_client(require_auth=True)
+                    response = (client.table("attempts").update({"status": "cancelado"})
+                                .eq("id", active["id"]).eq("status", "en_progreso")
+                                .execute())
+                    if response.data:
+                        st.session_state.pop("active_attempt_id", None)
+                        st.session_state.pop("attempt_index", None)
+                        st.rerun()
+                    else:
+                        st.error("No se pudo cancelar el intento.")
+                except Exception as exc:
+                    st.error(f"Error al cancelar: {exc}")
+            return
         _run_active_attempt_v16(user, active)
         return
 
