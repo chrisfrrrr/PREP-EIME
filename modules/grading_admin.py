@@ -9,7 +9,7 @@ def client():
 def attempts():
     return (client().table("attempts").select("id,student_id,career_code,finished_at,grading_status")
         .eq("status","finalizado").eq("grading_mode","administrativa")
-        .order("finished_at",desc=True).limit(200).execute().data or [])
+        .order("finished_at",desc=True).limit(80).execute().data or [])
 
 def rubrics():
     return (client().table("grading_rubrics").select("id,code,name")
@@ -104,10 +104,10 @@ def published_rubric_details(attempt_id):
     return result if isinstance(result, list) else []
 
 
-def dashboard_rows():
+def dashboard_rows(attempt_rows=None):
     """Admin-only consolidated evaluation queue; batched reads."""
     c = client()
-    rows = attempts()
+    rows = attempt_rows if attempt_rows is not None else attempts()
     if not rows:
         return []
     ids = [r["id"] for r in rows]

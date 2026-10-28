@@ -1,6 +1,7 @@
-streamlit>=1.39
-pandas>=2.2
-plotly>=5.24
-python-dotenv>=1.0
-supabase>=2.9
-openpyxl>=3.1.5
+# Dependencias acotadas para despliegue reproducible en Streamlit Cloud
+streamlit>=1.39,<1.67
+pandas>=2.2,<3.2
+python-dotenv>=1.0,<2
+supabase>=2.9,<2.34
+openpyxl>=3.1.5,<4
+pyarrow>=19,<25

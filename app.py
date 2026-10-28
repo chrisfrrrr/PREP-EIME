@@ -974,32 +974,11 @@ def progress_view(user):
     if not evaluated_attempts:
         st.info("Aún no hay resultados evaluados para mostrar una evolución.")
     else:
-        import plotly.graph_objects as go
-
-        values = [float(a["score"]) for a in evaluated_attempts]
-        labels = [f"Intento {i}" for i in range(1, len(values) + 1)]
-        dates = [(a.get("started_at") or "")[:10] or "Sin fecha"
-                 for a in evaluated_attempts]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=labels,
-            y=values,
-            mode="lines+markers" if len(values) > 1 else "markers",
-            marker=dict(size=12),
-            line=dict(width=3),
-            customdata=dates,
-            hovertemplate="%{x}<br>Fecha: %{customdata}<br>Resultado: %{y:.1f}%<extra></extra>",
-            name="Resultado",
-        ))
-        fig.update_layout(
-            height=320,
-            margin=dict(l=10, r=10, t=15, b=10),
-            showlegend=False,
-            xaxis_title="Simulacro",
-            yaxis_title="Resultado (%)",
-            yaxis=dict(range=[0, 100], ticksuffix="%"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # Gráfico nativo: evita cargar Plotly y su árbol de dependencias.
+        values = [float(a["score"]) for a in evaluated_attempts[-30:]]
+        chart_data = pd.DataFrame({"Resultado (%)": values},
+                                  index=[f"Intento {i}" for i in range(1, len(values) + 1)])
+        st.line_chart(chart_data, height=300)
         if len(values) == 1:
             st.caption("Solo hay un simulacro evaluado. La tendencia se mostrará cuando completes otro.")
 
@@ -1895,7 +1874,7 @@ def administrative_grading_view(user):
             return
         # Panel consolidado de evaluación y filtros de la bandeja administrativa.
         try:
-            dashboard = grading_admin.dashboard_rows()
+            dashboard = grading_admin.dashboard_rows(attempts)
             st.subheader("Panel de gestión de evaluaciones")
             states = ("Pendiente", "En evaluación", "Evaluado", "Publicado")
             cols = st.columns(4)

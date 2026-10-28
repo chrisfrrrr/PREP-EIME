@@ -56,7 +56,7 @@ def render(attempts):
         st.caption('Selecciona «Actualizar mi diagnóstico» para consultar tus resultados oficiales más recientes.')
         return
     with st.spinner('Consultando evaluaciones publicadas...'):
-        courses, criteria, recommendations, inspected, warnings = _collect(eligible[:30])
+        courses, criteria, recommendations, inspected, warnings = _collect(eligible[:10])
     if warnings:
         st.warning('Algunos datos no estuvieron disponibles. Intenta actualizar nuevamente.')
     if not inspected:
