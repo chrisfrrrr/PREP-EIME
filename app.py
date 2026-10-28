@@ -1956,6 +1956,14 @@ def administrative_grading_view(user):
             k1.metric("Respuestas por completar", pending_answers)
             k2.metric("Simulacros publicados (%)", f"{publish_pct:.1f}%")
             k3.metric("Listos para publicar", sum(r["estado_panel"] == "Evaluado" for r in dashboard))
+            # La selección de trabajo prevalece sobre los filtros tras guardar.
+            # Por ejemplo, un simulacro puede pasar de Pendiente a En evaluación.
+            active_attempt_id = st.session_state.get("admin_queue_selected")
+            if active_attempt_id and not any(r["id"] == active_attempt_id for r in visible):
+                active_row = next((r for r in dashboard if r["id"] == active_attempt_id), None)
+                if active_row is not None:
+                    visible.insert(0, active_row)
+                    st.caption("Se mantiene abierto el simulacro en edición, aunque ya no coincida con los filtros.")
             if not visible:
                 st.info("No hay simulacros que coincidan con los filtros.")
                 return
@@ -2184,25 +2192,70 @@ def administrative_grading_view(user):
                     total+=float(criterion["max_points"])*factors[level]
             st.metric("Puntos parciales (no publicados)",f"{total:.2f}/100")
             st.caption(f"{len(items)} de 5 criterios. 'Sin evaluar' es distinto de 'No demostrado'.")
-            submit=st.form_submit_button("Guardar evaluación",type="primary",
-                disabled=attempt.get("grading_status")=="publicado")
+            grade_col1, grade_col2 = st.columns(2)
+            with grade_col1:
+                submit=st.form_submit_button("Guardar evaluación",type="primary",
+                    disabled=attempt.get("grading_status")=="publicado")
+            with grade_col2:
+                submit_next=st.form_submit_button("Guardar evaluación y siguiente →",
+                    disabled=attempt.get("grading_status")=="publicado" or len(available_ids)<2)
         st.markdown("**Retroalimentación académica**")
         st.caption("Las observaciones serán visibles para el estudiante únicamente después de publicar la nota oficial.")
         with st.form(f"admin_feedback_{a['id']}"):
             observation = st.text_area("Observaciones sobre la respuesta", value=existing_feedback.get("observation") or "", max_chars=4000)
             recommendation = st.text_area("Recomendaciones de estudio", value=existing_feedback.get("recommendation") or "", max_chars=4000)
-            save_comment = st.form_submit_button("Guardar retroalimentación", disabled=attempt.get("grading_status")=="publicado")
-        if save_comment:
+            feedback_col1, feedback_col2 = st.columns(2)
+            with feedback_col1:
+                save_comment = st.form_submit_button("Guardar retroalimentación", disabled=attempt.get("grading_status")=="publicado")
+            with feedback_col2:
+                save_comment_next = st.form_submit_button("Guardar retroalimentación y siguiente →",
+                    disabled=attempt.get("grading_status")=="publicado" or len(available_ids)<2)
+        def advance_answer():
+            current_index = available_ids.index(a["id"])
+            if current_index + 1 < len(available_ids):
+                st.session_state[selection_key] = available_ids[current_index + 1]
+                return True
+            st.session_state[selection_key] = available_ids[-1]
+            return False
+
+        if save_comment or save_comment_next:
             try:
                 grading_admin.save_feedback(a["id"], observation, recommendation)
-                st.success("Retroalimentación guardada. Se mostrará al publicar el simulacro.")
+                if save_comment_next:
+                    if not advance_answer():
+                        st.info("Última pregunta del simulacro. No se cambió de simulacro.")
+                    else:
+                        st.toast("Retroalimentación guardada. Siguiente pregunta.")
+                else:
+                    st.toast("Retroalimentación guardada. Se mantiene la pregunta actual.")
                 st.rerun()
             except Exception as feedback_error:
                 st.error(f"No se pudo guardar la retroalimentación: {feedback_error}. Ejecuta la migración 1.9.1 una sola vez.")
-        if submit:
-            result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
-            st.success(f"Guardado correctamente: {result}")
-            st.rerun()
+        if submit or submit_next:
+            try:
+                result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
+                if submit_next:
+                    if not advance_answer():
+                        st.info("Última pregunta del simulacro. No se cambió de simulacro.")
+                    else:
+                        st.toast("Rúbrica guardada. Siguiente pregunta.")
+                else:
+                    st.toast("Rúbrica guardada. Se mantiene la pregunta actual.")
+                st.rerun()
+            except Exception as grading_error:
+                st.error(f"No se pudo guardar la evaluación: {grading_error}")
+        st.caption(f"Pregunta {available_ids.index(a['id']) + 1} de {len(available_ids)} · Simulacro {attempt['id'][:8]}")
+        nav_prev, nav_next = st.columns(2)
+        with nav_prev:
+            if st.button("← Pregunta anterior", key=f"admin_prev_{attempt['id']}",
+                         disabled=available_ids.index(a['id']) == 0):
+                st.session_state[selection_key] = available_ids[available_ids.index(a['id']) - 1]
+                st.rerun()
+        with nav_next:
+            if st.button("Siguiente pregunta →", key=f"admin_next_{attempt['id']}",
+                         disabled=available_ids.index(a['id']) == len(available_ids) - 1):
+                advance_answer()
+                st.rerun()
     except Exception as exc:
         st.error(f"No se pudo completar la operación: {exc}")
 
