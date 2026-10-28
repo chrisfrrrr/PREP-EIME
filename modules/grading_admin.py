@@ -81,3 +81,16 @@ def publication_preview(attempt_id):
 def publish(attempt_id):
     """Always relies on Supabase's administrator-only authorization."""
     return client().rpc("publish_attempt_grades",{"p_attempt_id":attempt_id}).execute().data
+
+
+def publication_enabled():
+    """Fail-closed switch. Enable only after the SQL security migration is tested."""
+    import streamlit as st
+    return st.secrets.get("ENABLE_ADMIN_PUBLICATION", False) is True
+
+
+def published_result(attempt_id):
+    """Server decides visibility; no client-side grade/status trust."""
+    return client().rpc("get_my_published_attempt_result", {
+        "p_attempt_id": attempt_id
+    }).execute().data

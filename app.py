@@ -690,13 +690,16 @@ def attempt_review_view(user):
     attempt = get_attempt(attempt_id)
     answers = get_attempt_answers_v16(attempt_id)
 
-    page_header(
-        "Revisión del simulacro",
-        "Resultados automáticos, autoevaluación guiada y respuestas pendientes de revisión docente",
-    )
-
     if attempt and attempt.get("grading_mode") == "administrativa":
         page_header("Revisión del simulacro", "Tus respuestas y soluciones esperadas")
+        try:
+            official = grading_admin.published_result(attempt_id)
+        except Exception as exc:
+            st.error(f"No fue posible consultar el estado de publicación: {exc}")
+            official = None
+        if official and official.get("published"):
+            st.success("La administración publicó tu resultado oficial.")
+            st.metric("Calificación oficial", f"{float(official['score']):.2f}/100")
         for i, a in enumerate(answers, 1):
             with st.expander(f"{i}. {a.get('course_name') or 'Pregunta'}"):
                 st.markdown("**Pregunta**")
@@ -711,6 +714,10 @@ def attempt_review_view(user):
             st.rerun()
         return
 
+    page_header(
+        "Revisión del simulacro",
+        "Resultados históricos: autoevaluación y revisión docente",
+    )
     for i,a in enumerate(answers,1):
         mode = a.get("evaluation_mode") or "autoevaluacion"
         status = a.get("evaluation_status")
@@ -1836,8 +1843,27 @@ def administrative_grading_view(user):
             if preview["ready"]:
                 st.metric("Nota general prevista (solo administrador)",f"{preview['score']:.2f}/100")
                 st.caption("Promedio simple de las puntuaciones de todas las respuestas. La nota definitiva la calcula Supabase al publicar.")
-                st.warning("La publicación permanece deshabilitada hasta completar los controles de inserción, lectura y transición de estados en Supabase.")
-                st.button("Publicar resultados",disabled=True,key=f"publish_disabled_{attempt['id']}")
+                if attempt.get("grading_status") == "publicado":
+                    st.success("Este simulacro ya tiene resultados publicados.")
+                else:
+                    # Deliberately disabled until database security migration is verified.
+                    ready_to_publish = grading_admin.publication_enabled()
+                    if not ready_to_publish:
+                        st.warning("La publicación está preparada, pero requiere validar las protecciones de Supabase antes de activarla.")
+                    confirmed = st.checkbox(
+                        "Confirmo que revisé las evaluaciones y deseo publicar la nota oficial",
+                        key=f"publish_confirm_{attempt['id']}",
+                        disabled=not ready_to_publish,
+                    )
+                    if st.button(
+                        "Publicar resultados oficialmente",
+                        type="primary",
+                        disabled=not (ready_to_publish and confirmed),
+                        key=f"publish_{attempt['id']}",
+                    ):
+                        result = grading_admin.publish(attempt["id"])
+                        st.success(f"Resultados publicados: {result}")
+                        st.rerun()
             else:
                 st.error("No se pudo verificar la integridad de las cinco puntuaciones por respuesta.")
         else:
