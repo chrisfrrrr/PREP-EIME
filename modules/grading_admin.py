@@ -144,3 +144,21 @@ def dashboard_rows():
                        "pendientes": total-complete-drafts,
                        "avance": round(100*complete/total, 1) if total else 0.0})
     return result
+
+
+def feedback(answer_id):
+    """Read administrator feedback (admin RLS controls access)."""
+    rows=(client().table("answer_feedback").select("observation,recommendation")
+          .eq("attempt_answer_id",answer_id).limit(1).execute().data or [])
+    return rows[0] if rows else {}
+
+
+def save_feedback(answer_id, observation, recommendation):
+    return client().rpc("save_answer_feedback", {
+        "p_answer_id":answer_id,"p_observation":observation,
+        "p_recommendation":recommendation}).execute().data
+
+
+def published_feedback(attempt_id):
+    return client().rpc("get_my_published_feedback", {
+        "p_attempt_id":attempt_id}).execute().data or []

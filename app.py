@@ -720,6 +720,12 @@ def attempt_review_view(user):
         if official and official.get("published"):
             st.success("La administración publicó tu resultado oficial.")
             st.metric("Calificación oficial", f"{float(official['score']):.2f}/100")
+        student_feedback = {}
+        if official and official.get("published"):
+            try:
+                student_feedback = {r["answer_id"]: r for r in grading_admin.published_feedback(attempt_id)}
+            except Exception:
+                pass  # Compatible con bases de datos aún sin migrar.
         for i, a in enumerate(answers, 1):
             with st.expander(f"{i}. {a.get('course_name') or 'Pregunta'}"):
                 st.markdown("**Pregunta**")
@@ -729,6 +735,13 @@ def attempt_review_view(user):
                 st.markdown("**Solución esperada**")
                 st.info(a.get("expected_answer") or "Sin solución registrada")
                 if official and official.get("published"):
+                    comment = student_feedback.get(a["id"], {})
+                    if comment.get("observation"):
+                        st.markdown("**Observaciones del evaluador**")
+                        st.write(comment["observation"])
+                    if comment.get("recommendation"):
+                        st.markdown("**Recomendaciones de estudio**")
+                        st.info(comment["recommendation"])
                     try:
                         details = grading_admin.published_rubric_details(attempt_id)
                         matching = next((d for d in details if d.get("answer_id") == a["id"]), None)
@@ -2043,7 +2056,7 @@ def administrative_grading_view(user):
                 use_container_width=False)
             # Expediente individual y analítica administrativa, solo lectura.
             # Se reutiliza la bandeja ya consultada; solo se leen notas publicadas.
-            with st.expander("Expedientes y analítica académica · v1.9.0", expanded=False):
+            with st.expander("Expedientes y analítica académica · v1.9.1", expanded=False):
                 try:
                     from modules.academic_analytics import render_administrative_academics
                     all_published_ids = [r["id"] for r in dashboard
@@ -2144,6 +2157,10 @@ def administrative_grading_view(user):
         with st.expander("Solución esperada"):
             st.write(a.get("expected_answer") or "No registrada")
         previous,scores=grading_admin.evaluation(a["id"])
+        try:
+            existing_feedback = grading_admin.feedback(a["id"])
+        except Exception:
+            existing_feedback = {}
         mapping={r["code"]:r for r in rubrics}
         prior=next((r["code"] for r in rubrics if previous and r["id"]==previous["rubric_id"]),rubrics[0]["code"])
         code=st.selectbox("Rúbrica",list(mapping),index=list(mapping).index(prior),
@@ -2169,6 +2186,19 @@ def administrative_grading_view(user):
             st.caption(f"{len(items)} de 5 criterios. 'Sin evaluar' es distinto de 'No demostrado'.")
             submit=st.form_submit_button("Guardar evaluación",type="primary",
                 disabled=attempt.get("grading_status")=="publicado")
+        st.markdown("**Retroalimentación académica**")
+        st.caption("Las observaciones serán visibles para el estudiante únicamente después de publicar la nota oficial.")
+        with st.form(f"admin_feedback_{a['id']}"):
+            observation = st.text_area("Observaciones sobre la respuesta", value=existing_feedback.get("observation") or "", max_chars=4000)
+            recommendation = st.text_area("Recomendaciones de estudio", value=existing_feedback.get("recommendation") or "", max_chars=4000)
+            save_comment = st.form_submit_button("Guardar retroalimentación", disabled=attempt.get("grading_status")=="publicado")
+        if save_comment:
+            try:
+                grading_admin.save_feedback(a["id"], observation, recommendation)
+                st.success("Retroalimentación guardada. Se mostrará al publicar el simulacro.")
+                st.rerun()
+            except Exception as feedback_error:
+                st.error(f"No se pudo guardar la retroalimentación: {feedback_error}. Ejecuta la migración 1.9.1 una sola vez.")
         if submit:
             result=grading_admin.save(a["id"],code,items,previous["version"] if previous else None)
             st.success(f"Guardado correctamente: {result}")
