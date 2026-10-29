@@ -56,9 +56,15 @@ def library_view(user):
                     try:
                         signed=client.storage.from_(BUCKET).create_signed_url(r['storage_path'],120)
                         url=signed.get('signedURL') or signed.get('signedUrl') or signed.get('signed_url')
-                        if url: st.link_button('Abrir PDF (2 minutos)',url)
+                        if url:
+                            st.session_state[f"lib_signed_{r['id']}"] = url
+                            st.session_state[f"lib_signed_at_{r['id']}"] = __import__('time').time()
                         else: st.error('No se pudo generar el enlace.')
                     except Exception: st.error('No se pudo autorizar la descarga.')
+                import time
+                signed_key=f"lib_signed_{r['id']}"
+                if st.session_state.get(signed_key) and time.time()-st.session_state.get(f"lib_signed_at_{r['id']}",0)<110:
+                    st.link_button('Abrir PDF (enlace temporal)',st.session_state[signed_key])
     if admin:
         st.divider()
         st.subheader('Gestión de biblioteca')

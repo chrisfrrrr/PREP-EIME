@@ -96,7 +96,25 @@ def login_view():
             st.caption("Modo demostración activo; el registro institucional requiere Supabase.")
 
 
+NAV_ICONS = {
+    "Inicio":"🏠", "Preparación académica":"📚", "Biblioteca":"📖",
+    "Preparación EGP":"🎓", "Simulador EGP":"📝", "Mi progreso":"📈",
+    "Gestión académica":"🗂️", "Banco de preguntas":"❓",
+    "Control de calidad":"✅", "Revisión de respuestas":"🔍",
+    "Usuarios y cohortes":"👥", "Analítica":"📊", "Evaluación administrativa":"⚖️",
+}
+
+
+def _navigate(section):
+    # Se aplica antes de crear el widget de navegación en la siguiente ejecución.
+    st.session_state["prep_next_section"] = section
+    st.rerun()
+
+
 def sidebar(user):
+    next_section = st.session_state.pop("prep_next_section", None)
+    if next_section:
+        st.session_state["main_navigation"] = next_section
     logo = Path(__file__).parent / "assets" / "logo_eime.png"
     if logo.is_file():
         st.sidebar.image(str(logo), use_container_width=True)
@@ -136,11 +154,12 @@ def sidebar(user):
         common.append("Evaluación administrativa")
 
     section = st.sidebar.radio(
-        "Navegación", common, label_visibility="collapsed", key="main_navigation"
+        "Navegación", common, label_visibility="collapsed", key="main_navigation",
+        format_func=lambda x: NAV_ICONS.get(x, "📌") + "  " + x
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("PREP-EIME · Edición institucional v1.12.0")
+    st.sidebar.caption("PREP-EIME · Edición institucional v1.13.0")
     if st.sidebar.button("Cerrar sesión"):
         logout()
 
@@ -216,7 +235,19 @@ def home_view(user):
         with c3:
             metric_card("Preguntas EGP", len(questions), "Banco institucional")
 
-    st.success("PREP-EIME está conectado al catálogo académico real de Supabase.")
+    st.markdown("### Accesos rápidos")
+    st.caption("Continúa tu preparación desde las principales herramientas de la plataforma.")
+    a,b,c = st.columns(3)
+    with a:
+        if st.button("📝  Ir al simulador",use_container_width=True,key="home_go_sim"):
+            _navigate("Simulador EGP")
+    with b:
+        if st.button("📖  Abrir biblioteca",use_container_width=True,key="home_go_lib"):
+            _navigate("Biblioteca")
+    with c:
+        if st.button("📈  Consultar progreso",use_container_width=True,key="home_go_progress"):
+            _navigate("Mi progreso")
+    st.markdown('<div class="prep-note">Los resultados académicos oficiales se muestran únicamente después de su publicación por el administrador.</div>',unsafe_allow_html=True)
 
 
 def academic_view(user):
