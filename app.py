@@ -1990,103 +1990,116 @@ def administrative_grading_view(user):
             report = pd.DataFrame(table_rows)
             st.dataframe(report.drop(columns=["Estudiante (ID)", "Publicado por (ID)"]).assign(
                 Simulacro=lambda df: df["Simulacro"].str[:8]), use_container_width=True, hide_index=True)
-            # Exportación nativa Excel con filtros, formato y hoja de resumen.
-            from io import BytesIO
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment
-            from openpyxl.utils import get_column_letter
-            from openpyxl.worksheet.table import Table, TableStyleInfo
+            # No generar un libro Excel durante cada pulsación de Guardar.
+            # Solo se construye si el administrador solicita la exportación.
+            if st.toggle("Preparar descarga Excel", value=False, key="admin_export_excel_toggle"):
+                # Exportación nativa Excel con filtros, formato y hoja de resumen.
+                from io import BytesIO
+                from openpyxl import Workbook
+                from openpyxl.styles import Font, PatternFill, Alignment
+                from openpyxl.utils import get_column_letter
+                from openpyxl.worksheet.table import Table, TableStyleInfo
 
-            excel_buffer = BytesIO()
-            workbook = Workbook()
-            sheet = workbook.active
-            sheet.title = "Evaluaciones"
-            sheet.append(list(report.columns))
-            for values in report.itertuples(index=False, name=None):
-                sheet.append([None if pd.isna(v) else v for v in values])
-            sheet.freeze_panes = "A2"
-            sheet.sheet_view.showGridLines = False
-            for cell in sheet[1]:
-                cell.font = Font(name="Aptos", bold=True, color="FFFFFF")
-                cell.fill = PatternFill("solid", fgColor="17365D")
-                cell.alignment = Alignment(vertical="center", wrap_text=True)
-            sheet.row_dimensions[1].height = 32
-            if len(report):
-                last_col = get_column_letter(len(report.columns))
-                excel_table = Table(displayName="TablaEvaluaciones", ref=f"A1:{last_col}{len(report)+1}")
-                excel_table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2",
-                    showFirstColumn=False, showLastColumn=False,
-                    showRowStripes=True, showColumnStripes=False)
-                sheet.add_table(excel_table)
-            for col_idx, name in enumerate(report.columns, 1):
-                width = min(44, max(14, len(str(name)) + 3))
-                if name in ("Nombre", "Estudiante (ID)", "Simulacro"):
-                    width = 38
-                if name in ("Finalizado (Guatemala)", "Publicado (UTC)"):
-                    width = 27
-                sheet.column_dimensions[get_column_letter(col_idx)].width = width
-            if "Nota oficial" in report.columns:
-                score_col = report.columns.get_loc("Nota oficial") + 1
-                for row_num in range(2, len(report) + 2):
-                    sheet.cell(row_num, score_col).number_format = '0.00'
-            summary = workbook.create_sheet("Resumen")
-            summary.append(["PREP-EIME · Resumen de evaluaciones"])
-            summary.merge_cells("A1:B1")
-            summary["A1"].font = Font(name="Aptos Display", size=16, bold=True, color="17365D")
-            summary.append(["Indicador", "Cantidad"])
-            for state in ("Pendiente", "En evaluación", "Evaluado", "Publicado"):
-                summary.append([state, sum(r["estado_panel"] == state for r in visible)])
-            summary.append(["Simulacros incluidos", len(visible)])
-            summary.append(["Respuestas pendientes", sum(r["pendientes"] + r["borradores"] for r in visible)])
-            summary.column_dimensions["A"].width = 38
-            summary.column_dimensions["B"].width = 20
-            summary.freeze_panes = "A3"
-            for cell in summary[2]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill("solid", fgColor="17365D")
-            workbook.save(excel_buffer)
-            st.download_button("Descargar reporte en Excel (.xlsx)",
-                data=excel_buffer.getvalue(),
-                file_name="PREP_EIME_evaluaciones_administrativas.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=False)
+                excel_buffer = BytesIO()
+                workbook = Workbook()
+                sheet = workbook.active
+                sheet.title = "Evaluaciones"
+                sheet.append(list(report.columns))
+                for values in report.itertuples(index=False, name=None):
+                    sheet.append([None if pd.isna(v) else v for v in values])
+                sheet.freeze_panes = "A2"
+                sheet.sheet_view.showGridLines = False
+                for cell in sheet[1]:
+                    cell.font = Font(name="Aptos", bold=True, color="FFFFFF")
+                    cell.fill = PatternFill("solid", fgColor="17365D")
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+                sheet.row_dimensions[1].height = 32
+                if len(report):
+                    last_col = get_column_letter(len(report.columns))
+                    excel_table = Table(displayName="TablaEvaluaciones", ref=f"A1:{last_col}{len(report)+1}")
+                    excel_table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2",
+                        showFirstColumn=False, showLastColumn=False,
+                        showRowStripes=True, showColumnStripes=False)
+                    sheet.add_table(excel_table)
+                for col_idx, name in enumerate(report.columns, 1):
+                    width = min(44, max(14, len(str(name)) + 3))
+                    if name in ("Nombre", "Estudiante (ID)", "Simulacro"):
+                        width = 38
+                    if name in ("Finalizado (Guatemala)", "Publicado (UTC)"):
+                        width = 27
+                    sheet.column_dimensions[get_column_letter(col_idx)].width = width
+                if "Nota oficial" in report.columns:
+                    score_col = report.columns.get_loc("Nota oficial") + 1
+                    for row_num in range(2, len(report) + 2):
+                        sheet.cell(row_num, score_col).number_format = '0.00'
+                summary = workbook.create_sheet("Resumen")
+                summary.append(["PREP-EIME · Resumen de evaluaciones"])
+                summary.merge_cells("A1:B1")
+                summary["A1"].font = Font(name="Aptos Display", size=16, bold=True, color="17365D")
+                summary.append(["Indicador", "Cantidad"])
+                for state in ("Pendiente", "En evaluación", "Evaluado", "Publicado"):
+                    summary.append([state, sum(r["estado_panel"] == state for r in visible)])
+                summary.append(["Simulacros incluidos", len(visible)])
+                summary.append(["Respuestas pendientes", sum(r["pendientes"] + r["borradores"] for r in visible)])
+                summary.column_dimensions["A"].width = 38
+                summary.column_dimensions["B"].width = 20
+                summary.freeze_panes = "A3"
+                for cell in summary[2]:
+                    cell.font = Font(bold=True, color="FFFFFF")
+                    cell.fill = PatternFill("solid", fgColor="17365D")
+                workbook.save(excel_buffer)
+                st.download_button("Descargar reporte en Excel (.xlsx)",
+                    data=excel_buffer.getvalue(),
+                    file_name="PREP_EIME_evaluaciones_administrativas.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=False)
             # Expediente individual y analítica administrativa, solo lectura.
             # Se reutiliza la bandeja ya consultada; solo se leen notas publicadas.
             with st.expander("Expedientes y analítica académica · v1.9.1", expanded=False):
-                try:
-                    from modules.academic_analytics import render_administrative_academics
-                    all_published_ids = [r["id"] for r in dashboard
-                                         if r["estado_panel"] == "Publicado"]
-                    analytics_official = {}
-                    for batch_start in range(0, len(all_published_ids), 100):
-                        batch = (grading_admin.client().table("attempts")
-                            .select("id,score")
-                            .in_("id", all_published_ids[batch_start:batch_start+100])
-                            .eq("grading_status", "publicado")
-                            .execute().data or [])
-                        analytics_official.update({r["id"]: r for r in batch})
-                    render_administrative_academics(dashboard, analytics_official)
-                except Exception as analytics_error:
-                    st.warning(f"No fue posible cargar el expediente académico: {analytics_error}")
-            # Streamlit conserva el valor del widget por clave, no por índice.
-            # Sincronizar ANTES de instanciarlo; el callback registra cambios manuales.
-            visible_ids = [r["id"] for r in visible]
-            active_id = st.session_state.get("admin_active_attempt_id")
-            if active_id in visible_ids:
-                if st.session_state.get("admin_queue_selected") != active_id:
-                    st.session_state["admin_queue_selected"] = active_id
-            elif st.session_state.get("admin_queue_selected") not in visible_ids:
-                st.session_state["admin_queue_selected"] = visible_ids[0]
+                if st.toggle("Cargar expedientes y analítica", value=False, key="admin_load_analytics"):
+                    try:
+                        from modules.academic_analytics import render_administrative_academics
+                        all_published_ids = [r["id"] for r in dashboard
+                                             if r["estado_panel"] == "Publicado"]
+                        analytics_official = {}
+                        for batch_start in range(0, len(all_published_ids), 100):
+                            batch = (grading_admin.client().table("attempts")
+                                .select("id,score")
+                                .in_("id", all_published_ids[batch_start:batch_start+100])
+                                .eq("grading_status", "publicado")
+                                .execute().data or [])
+                            analytics_official.update({r["id"]: r for r in batch})
+                        render_administrative_academics(dashboard, analytics_official)
+                    except Exception as analytics_error:
+                        st.warning(f"No fue posible cargar el expediente académico: {analytics_error}")
+            # Navegación estable: los identificadores no dependen del orden de la bandeja.
+            # La selección activa es independiente del estado interno del selectbox.
+            # Mantener el orden de opciones fijo evita reinicios al pasar de Pendiente
+            # a En evaluación / Evaluado durante un guardado.
+            from modules.admin_navigation import resolve_attempt, resolve_answer, next_answer
+            visible_ids = sorted({r["id"] for r in visible})
+            active_id = resolve_attempt(st.session_state.get("admin_active_attempt_id"), visible_ids)
+            if st.session_state.get("admin_active_attempt_id") != active_id:
+                st.session_state["admin_active_attempt_id"] = active_id
+            # No asignar a una clave de widget ya creado. El callback se ejecuta
+            # antes de la nueva renderización, y solo cambia con una acción manual.
+            widget_key = "admin_queue_selected_stable"
+            if st.session_state.get(widget_key) not in visible_ids:
+                st.session_state[widget_key] = active_id
+            elif st.session_state[widget_key] != active_id:
+                st.session_state[widget_key] = active_id
 
             def on_admin_attempt_change():
-                st.session_state["admin_active_attempt_id"] = st.session_state["admin_queue_selected"]
+                new_id = st.session_state.get(widget_key)
+                if new_id in visible_ids:
+                    st.session_state["admin_active_attempt_id"] = new_id
 
-            selected_id = st.selectbox("Abrir simulacro", visible_ids,
+            st.selectbox("Abrir simulacro", visible_ids,
                 format_func=lambda aid: next(
                     f"{r['id'][:8]} · {r['nombre_estudiante']} · {r.get('career_code') or '—'} · {r['estado_panel']} · {r['completas']}/{r['respuestas']}"
-                    for r in visible if r["id"] == aid), key="admin_queue_selected",
-                on_change=on_admin_attempt_change)
-            st.session_state["admin_active_attempt_id"] = selected_id
+                    for r in visible if r["id"] == aid),
+                key=widget_key, on_change=on_admin_attempt_change)
+            selected_id = st.session_state["admin_active_attempt_id"]
             attempt = next(r for r in attempts if r["id"] == selected_id)
         except Exception as dashboard_error:
             st.warning(f"No se pudo cargar el panel: {dashboard_error}")
@@ -2158,8 +2171,8 @@ def administrative_grading_view(user):
         pending_answer = st.session_state.get("admin_pending_answer_id")
         pending_attempt = st.session_state.get("admin_pending_attempt_id")
         if pending_attempt == attempt["id"]:
-            if pending_answer in available_ids:
-                st.session_state[selection_key] = pending_answer
+            st.session_state[selection_key] = resolve_answer(
+                st.session_state.get(selection_key), pending_answer, available_ids)
             st.session_state.pop("admin_pending_answer_id", None)
             st.session_state.pop("admin_pending_attempt_id", None)
         if st.session_state.get(selection_key) not in available_ids:
@@ -2223,9 +2236,9 @@ def administrative_grading_view(user):
                     disabled=attempt.get("grading_status")=="publicado")
 
         def advance_answer():
-            current_index = available_ids.index(a["id"])
-            if current_index + 1 < len(available_ids):
-                st.session_state["admin_pending_answer_id"] = available_ids[current_index + 1]
+            target_id = next_answer(a["id"], available_ids)
+            if target_id is not None:
+                st.session_state["admin_pending_answer_id"] = target_id
                 st.session_state["admin_pending_attempt_id"] = attempt["id"]
                 return True
             return False
