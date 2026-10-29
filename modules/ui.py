@@ -6,6 +6,10 @@ def apply_branding():
         '''
         <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 3rem; max-width: 1250px;}
+        .prep-login-heading {text-align:center;font-size:2.7rem;font-weight:850;letter-spacing:.02em;color:#0A355E;margin:1.3rem 0 .1rem;}
+        .prep-login-sub {text-align:center;color:#5B6673;font-size:.95rem;margin-bottom:1.8rem;}
+        div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"] {background:#0A355E;border-radius:9px;}
+        [data-testid="stSidebar"] {border-right:4px solid #B28A39;}
         [data-testid="stSidebar"] {background: #0A355E;}
         [data-testid="stSidebar"] * {color: white;}
         .prep-card {

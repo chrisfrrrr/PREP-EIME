@@ -68,3 +68,28 @@ def logout():
     for key in ("user", "sb_access_token", "sb_refresh_token"):
         st.session_state.pop(key, None)
     st.rerun()
+
+
+INSTITUTIONAL_DOMAIN = "@ingenieria.usac.edu.gt"
+
+
+def request_student_registration(name, carnet, email, career, password, confirmation):
+    name, carnet, email = name.strip(), carnet.strip(), email.strip().lower()
+    if DEMO_MODE:
+        return False, "El registro requiere una conexión real a Supabase."
+    if not name or len(name) < 5 or not carnet or len(carnet) > 32:
+        return False, "Completa el nombre y el carné correctamente."
+    if not email.endswith(INSTITUTIONAL_DOMAIN) or email.count('@') != 1 or len(email.split('@')[0]) < 1:
+        return False, "Solo se permiten correos @ingenieria.usac.edu.gt."
+    if career not in ('IE','IEL','IME'):
+        return False, "Selecciona una carrera válida."
+    if len(password) < 10 or password != confirmation:
+        return False, "La contraseña debe tener al menos 10 caracteres y coincidir con la confirmación."
+    try:
+        client = get_supabase_client(require_auth=False)
+        client.auth.sign_up({"email": email, "password": password, "options": {
+            "data": {"full_name": name, "student_id": carnet, "career_code": career}
+        }})
+        return True, "Solicitud recibida. Revisa tu correo institucional para verificar la cuenta. El administrador deberá aprobarla antes de ingresar."
+    except Exception:
+        return False, "No se pudo registrar la solicitud. Verifica el correo o contacta al administrador."

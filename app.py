@@ -1,7 +1,8 @@
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 
-from modules.auth import login, logout
+from modules.auth import login, logout, request_student_registration
 from modules.config import DEMO_MODE
 from modules.data import (
     CAREERS, CONTENT_STATUSES, QUESTION_TYPES, COMPETENCIES,
@@ -52,30 +53,53 @@ CAREER_LABELS = {
 
 
 def login_view():
-    c1, c2, c3 = st.columns([1, 1.3, 1])
-    with c2:
-        st.markdown("## PREP-EIME")
-        st.caption("Plataforma de Repaso y Evaluación para el Examen General Privado")
-        st.info("Acceso institucional restringido")
-        email = st.text_input("Correo")
-        password = st.text_input("Contraseña", type="password")
-        if st.button("Ingresar", use_container_width=True, type="primary"):
-            user = login(email, password)
-            if user:
-                st.session_state.user = user
-                st.rerun()
-
+    assets = Path(__file__).parent / "assets"
+    left, middle, right = st.columns([1, 3, 1])
+    with middle:
+        eime = assets / "logo_eime.png"
+        fiusac = assets / "logo_fiusac.png"
+        if eime.is_file():
+            st.image(str(eime), use_container_width=True)
+        if fiusac.is_file():
+            _, center_logo, _ = st.columns([1, 2, 1])
+            with center_logo:
+                st.image(str(fiusac), use_container_width=True)
+    st.markdown('<div class="prep-login-heading">PREP-EIME</div>', unsafe_allow_html=True)
+    st.markdown('<div class="prep-login-sub">Escuela de Ingeniería Mecánica Eléctrica · Facultad de Ingeniería · USAC</div>', unsafe_allow_html=True)
+    _, center, _ = st.columns([1, 1.6, 1])
+    with center:
+        tab_login, tab_register = st.tabs(["Iniciar sesión", "Solicitar acceso"])
+        with tab_login:
+            with st.form("institutional_login"):
+                email = st.text_input("Correo institucional", placeholder="usuario@ingenieria.usac.edu.gt")
+                password = st.text_input("Contraseña", type="password")
+                submitted = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
+            if submitted:
+                user = login(email, password)
+                if user:
+                    st.session_state.user = user
+                    st.rerun()
+        with tab_register:
+            st.info("El registro requiere correo institucional y aprobación del administrador. Verifica tu correo después de registrarte.")
+            with st.form("student_registration"):
+                name = st.text_input("Nombre completo")
+                carnet = st.text_input("Carné")
+                mail = st.text_input("Correo institucional", placeholder="usuario@ingenieria.usac.edu.gt")
+                career = st.selectbox("Carrera", list(CAREER_LABELS), format_func=lambda x: CAREER_LABELS[x])
+                pwd = st.text_input("Contraseña nueva (mínimo 10 caracteres)", type="password")
+                confirm = st.text_input("Confirmar contraseña", type="password")
+                register = st.form_submit_button("Enviar solicitud", type="primary", use_container_width=True)
+            if register:
+                ok, message = request_student_registration(name, carnet, mail, career, pwd, confirm)
+                (st.success if ok else st.error)(message)
         if DEMO_MODE:
-            with st.expander("Credenciales de demostración"):
-                st.code(
-                    "estudiante@demo.gt / demo123\n"
-                    "docente@demo.gt / demo123\n"
-                    "coordinacion@demo.gt / demo123\n"
-                    "admin@demo.gt / demo123"
-                )
+            st.caption("Modo demostración activo; el registro institucional requiere Supabase.")
 
 
 def sidebar(user):
+    logo = Path(__file__).parent / "assets" / "logo_eime.png"
+    if logo.is_file():
+        st.sidebar.image(str(logo), use_container_width=True)
     st.sidebar.markdown("## PREP-EIME")
     st.sidebar.caption("Escuela de Ingeniería Mecánica Eléctrica")
     st.sidebar.markdown("---")
@@ -116,7 +140,7 @@ def sidebar(user):
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("PREP-EIME v1.7 · Control de calidad")
+    st.sidebar.caption("PREP-EIME · Edición institucional v1.11.0")
     if st.sidebar.button("Cerrar sesión"):
         logout()
 
@@ -2286,10 +2310,28 @@ def administrative_grading_view(user):
 
 def users_view(user):
     page_header("Usuarios y cohortes", "Administración de acceso")
-    st.info(
-        "La administración masiva de estudiantes será una etapa posterior, "
-        "con importación desde Excel."
-    )
+    from modules.student_access import pending_requests, decide_request
+    st.caption("Solicitudes de estudiantes con correo institucional verificado")
+    try:
+        requests = pending_requests()
+        st.metric("Solicitudes pendientes", len(requests))
+        if not requests:
+            st.success("No hay solicitudes pendientes de aprobación.")
+        for req in requests:
+            with st.container(border=True):
+                st.write(f"**{req.get('full_name','')}** · Carné: {req.get('student_id','')}")
+                st.caption(f"{req.get('email','')} · {CAREER_LABELS.get(req.get('career_code'),req.get('career_code'))}")
+                c1,c2=st.columns(2)
+                if c1.button("Aprobar", key=f"approve_{req['id']}", type="primary"):
+                    ok,msg=decide_request(req['id'], True)
+                    (st.success if ok else st.error)(msg)
+                    if ok: st.rerun()
+                if c2.button("Rechazar", key=f"reject_{req['id']}"):
+                    ok,msg=decide_request(req['id'], False)
+                    (st.success if ok else st.error)(msg)
+                    if ok: st.rerun()
+    except Exception as exc:
+        st.error("No se pudieron cargar las solicitudes. Ejecuta primero migration_1110_registro_aprobacion.sql y comprueba tu sesión de administrador.")
 
 
 def analytics_view(user):
