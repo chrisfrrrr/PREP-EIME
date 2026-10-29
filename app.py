@@ -140,7 +140,7 @@ def sidebar(user):
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("PREP-EIME · Edición institucional v1.11.0")
+    st.sidebar.caption("PREP-EIME · Edición institucional v1.12.0")
     if st.sidebar.button("Cerrar sesión"):
         logout()
 
@@ -280,11 +280,8 @@ def academic_view(user):
 
 
 def library_view(user):
-    page_header("Biblioteca académica", "Repositorio institucional")
-    st.info(
-        "El módulo de recursos se incorporará después de completar "
-        "la revisión del banco de preguntas."
-    )
+    from modules.library import library_view as render_library
+    render_library(user)
 
 
 def egp_view(user):
